@@ -1,7 +1,6 @@
 import pandas as pd
 from Statistical_analysis.nested_cv import NestedCV
 from Statistical_analysis.univariate_statistical_analysis import univariate_analysis
-from Statistical_analysis.data_harmonization import *
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
