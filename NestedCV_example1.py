@@ -6,7 +6,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.datasets import load_breast_cancer
 
-def statistical_pipeline(X, y, covariates_df, data_harmonization='MComBat', save_dir=None, seed=111):
+def statistical_pipeline(X, y, save_dir=None, seed=111):
     # Univariate analysis
     univariate_results = univariate_analysis(X, y, save_dir=None)
     
