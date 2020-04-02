@@ -247,5 +247,3 @@ class DimensionalityReduction(BaseEstimator):
         else:
             self.coefficient_matrix = self.method(X, self.save_dir, y)
             return self.transform(X)
-
-# TODO : implement univariate statistical analysis for the reduced dataset that can be enable in options dict
