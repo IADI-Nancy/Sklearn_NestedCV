@@ -11,7 +11,11 @@ from sklearn.datasets import load_breast_cancer
 
 def statistical_pipeline(X, y, save_dir=None, seed=111):
     # Univariate analysis
-    univariate_results = univariate_analysis(X, y, save_dir=None)
+    univariate_results = univariate_analysis(X, y, save_dir=save_dir)
+    if save_dir is not None:
+        save_path = os.path.join(save_dir, 'univariate_analysis.xlsx')
+        df = pd.DataFrame(univariate_results)
+        df.to_excel(save_path)
     
     # NestedCV with outer loop and inner loop being 5Fold Stratified cross validation repeated 10 times 
     # Pipeline = Z-score normalization + SMOTE + Dimensionality reduction with Hierarchical clustering + 
