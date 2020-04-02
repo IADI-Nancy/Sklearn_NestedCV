@@ -9,8 +9,9 @@ from sklearn.datasets import load_breast_cancer
 def statistical_pipeline(X, y, covariates_df, data_harmonization='MComBat', save_dir=None, seed=111):
     # Univariate analysis
     univariate_results = univariate_analysis(X, y, save_dir=None)
-
+    
     # NestedCV with outer loop and inner loop being 10Fold Stratified cross validation
+    # Pipeline = Z-score normalization + PCA + L2 Logistic Regression
     pipeline_dic = {'scale': StandardScaler, 'DimensionalityReduction': PCA, 'classifier': LogisticRegression}
     params_dic = {'classifier': {'C': 1/np.arange(0.1, 10.1, 0.1)}}
     pipeline_options = {'DimensionalityReduction': {'sklearn_kwargs': {'n_components': 0.95, 'random_state': seed}},
