@@ -6,7 +6,6 @@ from Statistical_analysis.nested_cv import NestedCV
 from Statistical_analysis.univariate_statistical_analysis import univariate_analysis
 from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from sklearn.svm import SVC
 from sklearn.datasets import load_breast_cancer
 
