@@ -17,19 +17,19 @@ def statistical_pipeline(X, y, save_dir=None, seed=111):
         df = pd.DataFrame(univariate_results)
         df.to_excel(save_path)
     
-    # NestedCV with outer loop and inner loop being 5Fold Stratified cross validation repeated 10 times 
+    # NestedCV with outer loop and inner loop being 5Fold Stratified cross validation repeated 5 times 
     # Pipeline = Z-score normalization + SMOTE + Dimensionality reduction with Hierarchical clustering + 
     #            Feature selection with MRMR + SVM classifier
     
-    outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=seed)
-    inner_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=seed)
+    outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=5, random_state=seed)
+    inner_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=5, random_state=seed)
     pipeline_dic = {'scale': StandardScaler,
                     'oversampling': imblearn.over_sampling.SMOTE,
                     'DimensionalityReduction': 'hierarchical_clust_leger',
                     'FeatureSelection': 'mw',
                     'classifier': SVC}
-    params_dic = {'classifier': {'C': 1/np.arange(0.1, 1.1, 0.1)},
-                  'FeatureSelection': {'n_selected_features': [5, 10, 15, 20, None]}}
+    params_dic = {'classifier': {'C': 1/np.arange(0.1, 1.1, 0.2)},
+                  'FeatureSelection': {'n_selected_features': [5, 10, 20, None]}}
     pipeline_options = {'oversampling': {'sampling_strategy': 'minority'},
                         'FeatureSelection': {'bootstrap': True, 'ranking_aggregation': 'importance_score'},
                         'classifier': {'kernel': 'linear', 'random_state': seed}}
