@@ -6,7 +6,7 @@ from Statistical_analysis.univariate_statistical_analysis import univariate_anal
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
-from sklearn.datasets import load_breast_cancer
+from sklearn.datasets import load_iris
 
 def statistical_pipeline(X, y, save_dir=None, seed=111):
     # Univariate analysis
@@ -20,7 +20,7 @@ def statistical_pipeline(X, y, save_dir=None, seed=111):
                         'classifier': {'penalty': 'l2', 'random_state': seed, 'solver': 'saga', 'max_iter': 1e5}}
 
     clf = NestedCV(pipeline_dic, params_dic, outer_cv=10, inner_cv=10, n_jobs=-1, pipeline_options=pipeline_options,
-                   metric='roc_auc', verbose=2, refit=True, return_train_score=True, imblearn_pipeline=False)
+                   metric='roc_auc_ovo', verbose=2, refit=True, return_train_score=True, imblearn_pipeline=False)
     clf.fit(X, y)
     
     # Save outer results
@@ -30,7 +30,7 @@ def statistical_pipeline(X, y, save_dir=None, seed=111):
         df.to_excel(save_path)
 
 # Load dataset
-cancer = load_breast_cancer()
-X = cancer.data
-y = cancer.target
+iris = load_iris()
+X = iris.data
+y = iris.target
 statistical_pipeline(X, y)
