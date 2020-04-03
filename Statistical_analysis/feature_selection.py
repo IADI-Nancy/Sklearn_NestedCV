@@ -60,41 +60,46 @@ class FeatureSelection(BaseEstimator):
     # An extensive comparison of feature ranking aggregation techniques in bioinformatics.
     # Randall et al., 2012, IEEE
 
-    def __init__(self, method, bootstrap=False, n_bsamples=100, n_selected_features=20, ranking_aggregation=None,
+    def __init__(self, method='mrmr', bootstrap=False, n_bsamples=100, n_selected_features=20, ranking_aggregation=None,
                  ranking_done=False, score_indicator_lower=None):
-        if callable(method):
-            self.method = method
-            self.ranking_done = ranking_done
-            self.score_indicator_lower = score_indicator_lower
-        elif isinstance(method, str):
-            method = method.lower()
-            if method not in self.scoring_methods['name'] and method not in self.ranking_methods:
-                raise ValueError('If string method must be one of : {0}. '
-                                 '%s was passed'.format(str(self.scoring_methods['name'] + self.ranking_methods), method))
-            self.method = getattr(self, method)
-            if self.method.__name__ in FeatureSelection.ranking_methods:
-                self.ranking_done = True
-            else:
-                self.ranking_done = False
-                self.score_indicator_lower = self.scoring_methods['score_indicator_lower'][self.scoring_methods['name'].index(self.method.__name__)]
-        else:
-            raise TypeError('method argument must be a callable or a string')
+        self.method = method
+        self.ranking_done = ranking_done
+        self.score_indicator_lower = score_indicator_lower
+
         self.bootstrap = bootstrap
         self.n_bsamples = n_bsamples
         self.n_selected_features = n_selected_features
         self.ranking_aggregation = ranking_aggregation
-        if self.ranking_aggregation is not None:
-            if not callable(self.ranking_aggregation) and not isinstance(self.ranking_aggregation, str):
-                raise TypeError('ranking_aggregation option must be a callable or a string')
-            else:
-                if isinstance(self.ranking_aggregation, str):
-                    self.ranking_aggregation = self.ranking_aggregation.lower()
-                    if self.ranking_aggregation not in FeatureSelection.ranking_aggregation_methods:
-                        raise ValueError('If string ranking_aggregation must be one of : {0}. '
-                                         '%s was passed'.format(str(FeatureSelection.ranking_aggregation_methods),
-                                                                self.ranking_aggregation))
-                    self.ranking_aggregation = getattr(FeatureSelection, self.ranking_aggregation)
         self.is_fitted = False
+
+    def _get_fs_func(self):
+        if callable(self.method):
+            return self.method
+        elif isinstance(self.method, str):
+            method_name = self.method.lower()
+            if method_name not in self.scoring_methods['name'] and method_name not in self.ranking_methods:
+                raise ValueError('If string method must be one of : {0}. '
+                                 '%s was passed'.format(str(self.scoring_methods['name'] + self.ranking_methods), method_name))
+            if self.method in FeatureSelection.ranking_methods:
+                self.ranking_done = True
+            else:
+                self.ranking_done = False
+                self.score_indicator_lower = self.scoring_methods['score_indicator_lower'][self.scoring_methods['name'].index(self.method)]
+            return getattr(self, method_name)
+        else:
+            raise TypeError('method argument must be a callable or a string')
+
+    def _get_aggregation_method(self):
+        if not callable(self.ranking_aggregation) and not isinstance(self.ranking_aggregation, str):
+            raise TypeError('ranking_aggregation option must be a callable or a string')
+        else:
+            if isinstance(self.ranking_aggregation, str):
+                ranking_aggregation_name = self.ranking_aggregation.lower()
+                if self.ranking_aggregation not in FeatureSelection.ranking_aggregation_methods:
+                    raise ValueError('If string ranking_aggregation must be one of : {0}. '
+                                     '%s was passed'.format(str(FeatureSelection.ranking_aggregation_methods),
+                                                            ranking_aggregation_name))
+                return getattr(FeatureSelection, self.ranking_aggregation)
 
     @staticmethod
     def _check_X_Y(X, y=None):
@@ -114,7 +119,7 @@ class FeatureSelection(BaseEstimator):
                 if isinstance(y, pd.DataFrame) or isinstance(y, pd.Series):
                     y = y.to_numpy()
                 else:
-                    raise TypeError('X array must be an array like or pandas Dataframe/Series')
+                    raise TypeError('y array must be an array like or pandas Dataframe/Series')
             else:
                 y = np.array(y)
             if len(y.shape) != 1:
@@ -295,29 +300,32 @@ class FeatureSelection(BaseEstimator):
         """
         X, y = self._check_X_Y(X, y)
         n_samples, n_features = X.shape
+        self.fs_func = self._get_fs_func()
+        if self.ranking_aggregation is not None:
+            aggregation_method = self._get_aggregation_method()
         self.n_selected_features = self._check_n_selected_feature(X, self.n_selected_features)
         if self.bootstrap:
             if self.ranking_aggregation is None:
                 raise ValueError('ranking_aggregation option must be given if bootstrap is True')
             bsamples_index = np.array([resample(range(n_samples), random_state=_) for _ in range(self.n_bsamples)])
             if self.ranking_done:
-                bootstrap_ranks = np.array([self.method(X[_, :], y[_]) for _ in bsamples_index])
+                bootstrap_ranks = np.array([self.fs_func(X[_, :], y[_]) for _ in bsamples_index])
             else:
                 if self.score_indicator_lower is None:
                     raise ValueError('score_indicator_lower option must be given if a user scoring function is used')
-                boostrap_scores = np.array([self.method(X[_, :], y[_]) for _ in bsamples_index])
+                boostrap_scores = np.array([self.fs_func(X[_, :], y[_]) for _ in bsamples_index])
                 if not self.score_indicator_lower:
                     boostrap_scores *= -1
                 bootstrap_ranks = np.array([rankdata(_) for _ in boostrap_scores])
-            bootstrap_ranks_aggregated = self.ranking_aggregation(bootstrap_ranks, self.n_selected_features)
+            bootstrap_ranks_aggregated = aggregation_method(bootstrap_ranks, self.n_selected_features)
             self.ranking_index = [list(bootstrap_ranks_aggregated).index(_) for _ in sorted(bootstrap_ranks_aggregated)]
         else:
             if self.ranking_done:
-                ranks = self.method(X, y)
+                ranks = self.fs_func(X, y)
             else:
                 if self.score_indicator_lower is None:
                     raise ValueError('score_indicator_lower option must be given if a user scoring function is used')
-                score = self.method(X, y)
+                score = self.fs_func(X, y)
                 if not self.score_indicator_lower:
                     score *= -1
                 ranks = rankdata(score, method='ordinal')
@@ -337,16 +345,7 @@ class FeatureSelection(BaseEstimator):
                  array of shape (n_samples, n_selected_features) containing the selected features
         """
 
-        # Check X
-        if not isinstance(X, (list, tuple, np.ndarray)):
-            if isinstance(X, pd.DataFrame) or isinstance(X, pd.Series):
-                X = X.to_numpy()
-            else:
-                raise TypeError('X array must be an array like or pandas Dataframe/Series')
-        else:
-            X = np.array(X)
-        if len(X.shape) != 2:
-            raise ValueError('X array must 2D')
+        X, _ = self._check_X_Y(X, None)
         if self.is_fitted:
             self.selected_features = X[:, self.ranking_index[:self.n_selected_features]]
             return self.selected_features
