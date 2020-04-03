@@ -82,7 +82,7 @@ class NestedCV(BaseEstimator):
         be constructed with default parameters.
         Example with previous pipeline:
         pipeline_options = {'oversampling': {'sampling_strategy': 'minority_class'},
-                            'DimensionalityReduction': {'dr_options': {'sklearn_kwargs': {'n_components': 0.95}}},
+                            'DimensionalityReduction': {'n_components': 0.95},
                             'FeatureSelection': {'bootstrap': True, 'n_bsamples': 200, 'n_selected_features': 10,
                                                  'fs_options': {'ranking_aggregation': 'importance_score'}}}
     metric: string, callable or None, (default='roc_auc')
@@ -105,14 +105,16 @@ class NestedCV(BaseEstimator):
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
     """
-    def __init__(self, pipeline_dic, params_grid, outer_cv=5, inner_cv=5, n_jobs=None, imblearn_pipeline=False,
+    def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, imblearn_pipeline=False,
                  pipeline_options={}, metric='roc_auc', verbose=1, refit=True, return_train_score=False,
                  random_state=None):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
-        self._check_pipeline_dic(pipeline_dic)
-        self.model = self._get_pipeline(pipeline_dic)
-        self.params_grid = self._get_parameters_grid(params_grid)
+        self.pipeline_dic = pipeline_dic
+        self.params_dic = params_dic
+        # self._check_pipeline_dic(pipeline_dic)
+        # self.model = self._get_pipeline(pipeline_dic)
+        # self.params_grid = self._get_parameters_grid(params_grid)
         self.outer_cv = outer_cv
         self.inner_cv = inner_cv
         self.n_jobs = n_jobs
@@ -143,15 +145,21 @@ class NestedCV(BaseEstimator):
                     raise TypeError('Dictionary value must be a callable if associated key is not '
                                     'DimensionalityReduction or FeatureSelection')
 
-    @staticmethod
-    def _get_parameters_grid(parameters_grid):
+    def _get_parameters_grid(self, parameters_grid):
         if isinstance(parameters_grid, Mapping):
             # wrap dictionary in a singleton list to support either dict
             # or list of dicts
             parameters_grid = [parameters_grid]
         new_parameters_grid = []
         for grid in parameters_grid:
-            new_parameters_grid.append({step + '__' + params: grid[step][params] for step in grid.keys() for params in grid[step].keys()})
+            parameters_dic = {}
+            for step in grid.keys():
+                for params in grid[step].keys():
+                    if self._string_processing(step) == 'dimensionalityreduction':
+                        parameters_dic[step + '__method__' + params] = grid[step][params]
+                    else:
+                        parameters_dic[step + '__' + params] = grid[step][params]
+            new_parameters_grid.append(parameters_dic)
         return new_parameters_grid
 
     def _get_pipeline(self, pipeline_dic):
@@ -161,7 +169,10 @@ class NestedCV(BaseEstimator):
             if not kwargs:
                 warnings.warn('Default parameters are loaded for {0} (see corresponding class for detailed kwargs)'.format(step))
             if self._string_processing(step) == 'dimensionalityreduction':
-                step_object = DimensionalityReduction(pipeline_dic[step], **kwargs)
+                if callable(pipeline_dic[step]):
+                    step_object = DimensionalityReduction(pipeline_dic[step](**kwargs))
+                else:
+                    step_object = DimensionalityReduction(pipeline_dic[step])
             elif self._string_processing(step) == 'featureselection':
                 step_object = FeatureSelection(pipeline_dic[step], **kwargs)
             else:
@@ -194,7 +205,7 @@ class NestedCV(BaseEstimator):
             if isinstance(y, pd.DataFrame) or isinstance(y, pd.Series):
                 y = y.to_numpy()
             y = np.array(y)
-        return X,y
+        return X, y
 
     def fit(self, X, y=None, groups=None, **fit_params):
         """
@@ -236,6 +247,10 @@ class NestedCV(BaseEstimator):
                 Available only if refit == True.
         """
         X, y = self._check_X_Y(X, y)
+
+        self._check_pipeline_dic(self.pipeline_dic)
+        self.model = self._get_pipeline(self.pipeline_dic)
+        self.params_grid = self._get_parameters_grid(self.params_dic)
 
         outer_cv = check_cv(self.outer_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
         inner_cv = check_cv(self.inner_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
