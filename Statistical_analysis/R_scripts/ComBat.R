@@ -1,3 +1,4 @@
+# Source : https://github.com/Jfortin1/ComBatHarmonization/tree/master/R
 ComBat_harmonization = function(data, covariate, batch, parametric, empirical_bayes)
 {
   #=== Installing missing packages ===
