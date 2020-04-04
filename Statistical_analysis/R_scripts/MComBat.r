@@ -14,7 +14,7 @@
 ##     'mod' = model matrix of potential covariates
 ##     'numCovs' = column number of variables in 'mod' to be treated as continuous variables 
 ##                   (otherwise all covariates treated as factors)
-##
+##  Source : https://github.com/SteinCK/M-ComBat
 #############################################################################################################
 M.COMBAT <- function (dat, batch, center , mod, numCovs = NULL ) 
 {
@@ -97,7 +97,7 @@ M.COMBAT <- function (dat, batch, center , mod, numCovs = NULL )
   return(bayesdata)
 }
 
-MComBat_harmonization = function(data, covariate, batch, ref_batch, numCovs, na_var = 'N/A')
+MComBat_harmonization = function(data, covariate, batch, ref_batch, numCovs)
 {
   #=== Installing missing packages ===
   if (!requireNamespace("BiocManager", quietly = TRUE)){install.packages("BiocManager", repos = 'https://cloud.r-project.org/')}
@@ -108,22 +108,7 @@ MComBat_harmonization = function(data, covariate, batch, ref_batch, numCovs, na_
     if (!require(package, character.only = TRUE)){BiocManager::install(package)}
     library(package, character.only = TRUE)
   }
-  package_list = c('stringr')
-  for (package in package_list)
-  {
-    print(sprintf('%s', package))
-    if (!require(package, character.only = TRUE)){install.packages(package, repos = 'https://cloud.r-project.org/')}
-    library(package, character.only = TRUE)
-  }
   #=== Preprocess data ===
-  # Delete patients with N/A
-  NA_indices = which(apply(data, 1, function(x)str_detect(paste(x, collapse=""), paste(na_var, collapse="")))==TRUE)
-  if (length(NA_indices) != 0)
-  {
-    NA_rows <- data[NA_indices, ]
-    data <- data[-NA_indices, ]
-    covariate <- covariate[-NA_indices, ]
-  }
   data <- as.data.frame(sapply(data, as.numeric))
   data <- t(data)
   ref_batch <- seq(length(unique(batch)))[unique(batch) == ref_batch]
@@ -132,10 +117,6 @@ MComBat_harmonization = function(data, covariate, batch, ref_batch, numCovs, na_
   #=== ComBat ===
   RES <- M.COMBAT(data, batch, ref_batch, mod, numCovs)
   Combat_data <- as.data.frame(t(RES))
-  if (length(NA_indices) != 0)
-  {
-    Combat_data <- rbind(Combat_data, NA_rows)
-  }
   return(Combat_data)
 }
         
