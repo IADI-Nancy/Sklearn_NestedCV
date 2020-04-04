@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import sys
 from collections.abc import Mapping
-from rpy2.robjects import r, pandas2ri
+from rpy2.robjects import r, pandas2ri, Vector
 pandas2ri.activate()
 
 
@@ -12,11 +12,11 @@ def univariate_analysis(X, y, adjusted_method='BH', save_dir=None):
         if isinstance(X, (list, tuple, np.ndarray, Mapping)):
             if len(np.array(X).shape) != 2:
                 raise ValueError('X array must 2D')
-            df = pd.DataFrame(X)
+            X = pd.DataFrame(X)
         else:
             raise TypeError('X must be an array-like object, dictionary or pandas Dataframe/Series')
-    else:
-        df = X
+    # else:
+    #     df_X = X
     if not isinstance(y, (list, tuple, np.ndarray)):
         if isinstance(y, pd.DataFrame) or isinstance(y, pd.Series):
             y = y.to_numpy()
@@ -31,12 +31,12 @@ def univariate_analysis(X, y, adjusted_method='BH', save_dir=None):
             raise ValueError('y array must be 1D or 2D with second dimension equal to 1')
     if len(np.unique(y)) <= 1:
         raise ValueError('y array must have at least 2 classes')
-    df['Output'] = y
-    r_df = pandas2ri.py2ri(df)
+    r_X = pandas2ri.py2ri(X)
+    r_y = Vector(y)
     cwd = os.path.dirname(sys.argv[0])
     r.setwd(cwd)
     r.source('./Statistical_analysis/R_scripts/univariate_analysis.R')
-    r_dr_results = r.univariate_analysis(r_df, adjusted_method=adjusted_method)
+    r_dr_results = r.univariate_analysis(r_X, r_y, adjusted_method=adjusted_method)
     R_object_dict = {}
     keys = r_dr_results.names
     for i in range(len(keys)):
