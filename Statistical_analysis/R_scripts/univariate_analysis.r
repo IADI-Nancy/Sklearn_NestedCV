@@ -1,20 +1,13 @@
-univariate_analysis = function(data, adjusted_method = 'BH', na_var = 'N/A')
+univariate_analysis = function(data, output, adjusted_method = 'BH')
 {
   #=== Installing missing packages ===
-  package_list = c('pROC', 'stringr')
+  package_list = c('pROC')
   for (package in package_list)
   {
     if (!require(package, character.only = TRUE)){install.packages(package, repos = 'https://cloud.r-project.org/')}
     library(package, character.only = TRUE)
   }
   #=== Preprocess data ===
-  # Delete patients with N/A
-  NA_indices = which(apply(data, 1, function(x)str_detect(paste(x, collapse=""), paste(na_var, collapse="")))==TRUE)
-  if (length(NA_indices) != 0)
-  {
-    data <- data[-NA_indices, ]
-  }
-  output <- data$Output
   data <- as.data.frame(sapply(data[, !colnames(data) == 'Output'], as.numeric))
   output <- as.factor(output)
   #=== Statistical analysis ===
