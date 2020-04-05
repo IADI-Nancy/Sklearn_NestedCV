@@ -5,13 +5,13 @@ In a context of radiomics studies with data coming from different devices, some 
 
 
 ## Package needed
--numpy
--sklearn
--pandas
--rpy2
--scipy
--imblearn
--R
+- numpy
+- sklearn
+- pandas
+- rpy2
+- scipy
+- imblearn
+- R
 
 R can be installed automatically in your conda/anaconda environment by using `conda install -c r rpy2`.
 Missing R packages used in scripts will be downloaded automatically
