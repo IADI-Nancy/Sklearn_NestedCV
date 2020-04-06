@@ -29,8 +29,7 @@ class NestedCV(BaseEstimator):
         If some steps include callable from imblearn package
         (https://imbalanced-learn.readthedocs.io/en/stable/index.html) imblearn_pipeline option must be set to True (see
         cv_options argument).
-        If key is either 'FeatureSelection' or 'DimensionalityReduction' the value can be either str or callable as
-        described in the constructor of each of these two classes.
+        If key is either 'FeatureSelection' or 'DimensionalityReduction' the value can be either str or callable.
         Keyword options of each callable can be given in cv_options (see cv_options argument)
         Example:
         pipeline_dic = {'scale': sklearn.preprocessing.StandardScaler,
@@ -84,7 +83,7 @@ class NestedCV(BaseEstimator):
         pipeline_options = {'oversampling': {'sampling_strategy': 'minority_class'},
                             'DimensionalityReduction': {'n_components': 0.95},
                             'FeatureSelection': {'bootstrap': True, 'n_bsamples': 200, 'n_selected_features': 10,
-                                                 'fs_options': {'ranking_aggregation': 'importance_score'}}}
+                                                 'ranking_aggregation': 'importance_score'}}
     metric: string, callable or None, (default='roc_auc')
         A single string (https://scikit-learn.org/stable/modules/model_evaluation.html#scoring-parameter)
         or a callable (https://scikit-learn.org/stable/modules/model_evaluation.html#scoring) to evaluate the
