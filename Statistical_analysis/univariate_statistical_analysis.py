@@ -15,8 +15,6 @@ def univariate_analysis(X, y, adjusted_method='BH', save_dir=None):
             X = pd.DataFrame(X)
         else:
             raise TypeError('X must be an array-like object, dictionary or pandas Dataframe/Series')
-    # else:
-    #     df_X = X
     if not isinstance(y, (list, tuple, np.ndarray)):
         if isinstance(y, pd.DataFrame) or isinstance(y, pd.Series):
             y = y.to_numpy()
