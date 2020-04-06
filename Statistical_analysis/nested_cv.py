@@ -301,8 +301,6 @@ class NestedCV(BaseEstimator):
         # If refit is True Hyperparameter optimization on whole dataset and fit with best params
         if self.refit:
             print('=== Refit ===')
-            # we clone again after setting params in case some
-            # of the params are estimators as well.
             pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=scorer, n_jobs=self.n_jobs,
                                                 cv=outer_cv, verbose=self.verbose - 1)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
