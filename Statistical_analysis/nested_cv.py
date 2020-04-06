@@ -112,9 +112,6 @@ class NestedCV(BaseEstimator):
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
         self.params_dic = params_dic
-        # self._check_pipeline_dic(pipeline_dic)
-        # self.model = self._get_pipeline(pipeline_dic)
-        # self.params_grid = self._get_parameters_grid(params_grid)
         self.outer_cv = outer_cv
         self.inner_cv = inner_cv
         self.n_jobs = n_jobs
