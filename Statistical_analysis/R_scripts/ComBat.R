@@ -8,8 +8,8 @@ ComBat_harmonization = function(data, covariate, batch, parametric, empirical_ba
     if (!require(package, character.only = TRUE)){install.packages(package, repos = 'https://cloud.r-project.org/')}
     library(package, character.only = TRUE)
   }
-  source("./R_scripts/scripts/utils.R")
-  source("./R_scripts/scripts/combat.R")
+  source("./Statistical_analysis/R_scripts/scripts/utils.R")
+  source("./Statistical_analysis/R_scripts/scripts/combat.R")
   #=== Preprocess data ===
   data <- as.data.frame(sapply(data, as.numeric))
   data <- t(data)
