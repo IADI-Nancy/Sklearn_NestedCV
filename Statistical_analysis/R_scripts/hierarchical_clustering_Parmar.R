@@ -64,6 +64,6 @@ hierarchical_clustering_parmar = function(data, max_k = 20, threshold = 0.1, see
     cluster_medoids <- clust.medoid(n_k, dissimilarity_matrix, consensus_class_best_k[, 1])
     consensus_class_best_k[cluster_medoids, 2] <- 1
   }
-  return(consensus_class_best_k, merged_results)
+  return(consensus_class_best_k)
 }
 
