@@ -19,7 +19,7 @@ hierarchical_clustering_parmar = function(data, max_k = 20, threshold = 0.1, see
     if (!require(package, character.only = TRUE)){install.packages(package, repos = 'https://cloud.r-project.org/')}
     library(package, character.only = TRUE)
   }
-  source('./R_scripts/ConsensusClusterPlus_utils.R')
+  source('./Statistical_analysis/R_scripts/ConsensusClusterPlus_utils.R')
   #=== Preprocess data ===
   data <- as.matrix(sapply(data, as.numeric))
   #=== Run consensus hierarchical clustering ===
