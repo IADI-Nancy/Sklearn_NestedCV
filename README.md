@@ -11,6 +11,7 @@ In a context of radiomics studies with data coming from different devices, some 
 - rpy2
 - scipy
 - imblearn
+- skfeature
 - R
 
 R can be installed automatically in your conda/anaconda environment with rpy2 by using `conda install -c r rpy2`.
