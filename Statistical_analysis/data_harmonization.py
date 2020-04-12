@@ -18,6 +18,7 @@ def ComBat(X, batch, covariate=None, parametric=False, empirical_bayes=True, sav
             raise TypeError('X must be an array-like object, dictionary or pandas Dataframe/Series')
     else:
         df = X
+    row_names = df.index
     r_df = pandas2ri.py2ri(df)
     # Check covariate
     if covariate is None:
@@ -61,6 +62,7 @@ def ComBat(X, batch, covariate=None, parametric=False, empirical_bayes=True, sav
     for i in range(len(keys)):
         R_object_dict[keys[i]] = np.array(r_dr_results[i])
     results = pd.DataFrame(R_object_dict)
+    results.index = row_names
     if save_dir is not None:
         results.to_excel(os.path.join(save_dir, 'Features_ComBat.xlsx'))
     return results
@@ -75,6 +77,7 @@ def MComBat(X, batch, ref_batch=None, covariate=None, num_covs=None, save_dir=No
             raise TypeError('X must be an array-like object, dictionary or pandas Dataframe/Series')
     else:
         df = X
+    row_names = df.index
     r_df = pandas2ri.py2ri(df)
     # Check covariate
     if covariate is None:
@@ -133,6 +136,7 @@ def MComBat(X, batch, ref_batch=None, covariate=None, num_covs=None, save_dir=No
     for i in range(len(keys)):
         R_object_dict[keys[i]] = np.array(r_dr_results[i])
     results = pd.DataFrame(R_object_dict)
+    results.index = row_names
     if save_dir is not None:
         results.to_excel(os.path.join(save_dir, 'Feature_MComBat.xlsx'))
     return results
