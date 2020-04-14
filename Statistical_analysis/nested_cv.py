@@ -73,6 +73,15 @@ class NestedCV(BaseEstimator):
         Number of jobs to run in parallel in inner loop. None means 1 unless in a joblib.parallel_backend context.
         -1 means using all processors.
         See sklearn.model_selection.GridSearchCV for more details.
+    pre_dispatch: int, or string, optional
+        Controls the number of jobs that get dispatched during parallel execution. Reducing this number can be useful
+        to avoid an explosion of memory consumption when more jobs get dispatched than CPUs can process.
+        This parameter can be:
+            -None, in which case all the jobs are immediately created and spawned. Use this for lightweight and
+            fast-running jobs, to avoid delays due to on-demand spawning of the jobs
+            -An int, giving the exact number of total jobs that are spawned
+            -A string, giving an expression as a function of n_jobs, as in ‘2*n_jobs’
+        See sklearn.model_selection.GridSearchCV for more details
     imblearn_pipeline: boolean (default=False)
         Indicate whether callable from imblearn package are used in pipeline
     pipeline_options: dict (default={})
@@ -104,9 +113,9 @@ class NestedCV(BaseEstimator):
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
     """
-    def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, imblearn_pipeline=False,
-                 pipeline_options={}, metric='roc_auc', verbose=1, refit=True, return_train_score=False,
-                 random_state=None):
+    def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
+                 imblearn_pipeline=False, pipeline_options={}, metric='roc_auc', verbose=1, refit=True,
+                 return_train_score=False, random_state=None):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
@@ -114,6 +123,7 @@ class NestedCV(BaseEstimator):
         self.outer_cv = outer_cv
         self.inner_cv = inner_cv
         self.n_jobs = n_jobs
+        self.pre_dispatch = pre_dispatch
         self.metric = metric
         self.verbose = verbose
         self.refit = refit
@@ -263,7 +273,8 @@ class NestedCV(BaseEstimator):
             X_train_outer, X_test_outer = X[train_outer_index], X[test_outer_index]
             y_train_outer, y_test_outer = y[train_outer_index], y[test_outer_index]
             pipeline_inner = GridSearchCV(self.model, self.params_grid, scoring=scorer, n_jobs=self.n_jobs, cv=inner_cv,
-                                          return_train_score=self.return_train_score, verbose=self.verbose - 1)
+                                          return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                          pre_dispatch=self.pre_dispatch)
             pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
             self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
                                        'mean_test_score': pipeline_inner.cv_results_['mean_test_score'],
