@@ -7,6 +7,9 @@ from rpy2.robjects import r, pandas2ri, numpy2ri
 from Statistical_analysis.univariate_statistical_analysis import univariate_analysis
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.exceptions import NotFittedError
+from sklearn.cluster import FeatureAgglomeration
+from scipy.cluster.hierarchy import linkage, cut_tree
+from scipy.spatial.distance import squareform
 pandas2ri.activate()
 numpy2ri.activate()
 
@@ -111,22 +114,41 @@ class DimensionalityReduction(BaseEstimator):
             A comparative study of machine learning methods for time-to-event survival data for
             radiomics risk modelling. Leger et al., Scientific Reports, 2017
         """
-        df = pd.DataFrame(X)
-        r_df = pandas2ri.py2ri(df)
-        cwd = os.path.dirname(sys.argv[0])
-        r.setwd(cwd)
-        r.source('./Statistical_analysis/R_scripts/hierarchical_clustering_Leger.R')
-        r_dr_results = r.hierarchical_clustering_leger(r_df)
-        R_object_dict = {}
-        keys = r_dr_results.names
-        for i in range(len(keys)):
-            R_object_dict[keys[i]] = np.array(r_dr_results[i])
-        dr_results = pd.DataFrame(R_object_dict).to_numpy()
-        nb_cluster = np.amax(dr_results[:, 0]).astype(int)
-        coefficient_matrix = np.zeros((dr_results.shape[0], nb_cluster))  # Shape of (n_features, nb cluster)
-        for i in range(nb_cluster):
-            coefficient_matrix[:, i] = np.where(dr_results[:, 0] == i + 1, dr_results[:, 1], 0)
+        # df = pd.DataFrame(X)
+        # r_df = pandas2ri.py2ri(df)
+        # cwd = os.path.dirname(sys.argv[0])
+        # r.setwd(cwd)
+        # r.source('./Statistical_analysis/R_scripts/hierarchical_clustering_Leger.R')
+        # r_dr_results = r.hierarchical_clustering_leger(r_df)
+        # R_object_dict = {}
+        # keys = r_dr_results.names
+        # for i in range(len(keys)):
+        #     R_object_dict[keys[i]] = np.array(r_dr_results[i])
+        # dr_results = pd.DataFrame(R_object_dict).to_numpy()
+        # nb_cluster = np.amax(dr_results[:, 0]).astype(int)
+        # coefficient_matrix = np.zeros((dr_results.shape[0], nb_cluster))  # Shape of (n_features, nb cluster)
+        # for i in range(nb_cluster):
+        #     coefficient_matrix[:, i] = np.where(dr_results[:, 0] == i + 1, dr_results[:, 1], 0)
+        # coefficient_matrix = coefficient_matrix.T
+
+        dissimilarity_matrix = 1 - np.abs(pd.DataFrame(X).corr(method='spearman').to_numpy())
+        distance_matrix = squareform(dissimilarity_matrix)
+        Z = linkage(distance_matrix, method='complete')
+        labels = cut_tree(Z, height=0.1).reshape(-1)
+        corr_matrix = pd.DataFrame(X).corr(method='spearman').to_numpy()
+        feature_coefficient = np.zeros(np.size(labels))
+        for n_k in range(np.amax(labels) + 1):
+            n = np.sum(labels == n_k)
+            if n != 1:
+                cluster_corr_matrix = corr_matrix[labels == n_k, :][:, labels == n_k]
+                feature_coefficient[labels == n_k] = np.where(cluster_corr_matrix[:, 0] < 0, -1 / n, 1 / n)
+            else:
+                feature_coefficient[labels == n_k] = 1
+        coefficient_matrix = np.zeros((X.shape[1], np.amax(labels) + 1))  # Shape of (n_features, nb cluster)
+        for i in range(np.amax(labels) + 1):
+            coefficient_matrix[:, i] = np.where(labels == i, feature_coefficient, 0)
         coefficient_matrix = coefficient_matrix.T
+
         return coefficient_matrix
 
     def univariate_analysis(self, y, adjusted_method='BH', save_dir=None):
