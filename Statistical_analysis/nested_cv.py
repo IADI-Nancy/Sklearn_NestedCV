@@ -102,7 +102,10 @@ class NestedCV(BaseEstimator):
         See sklearn.model_selection.GridSearchCV for more details.
     verbose: int (default=1)
         Controls the verbosity: the higher, the more messages.
-    refit: boolean (default=True)
+    refit_inner: boolean, string or callable (default=True)
+        Refit an estimator using the best found parameters on the whole outer training set
+        Argument will be given to GridsearchCV that select hyperparameters in the inner loop
+    refit_outer: boolean (default=True)
         Refit an estimator using the whole dataset in two steps:
         1. Hyperparameter optimization with a gridsearch cross-validation (same parameter as outer CV).
         2. Refit an estimator using the best found parameters on the whole dataset.
@@ -114,8 +117,8 @@ class NestedCV(BaseEstimator):
         generalization performance.
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
-                 imblearn_pipeline=False, pipeline_options={}, metric='roc_auc', verbose=1, refit=True,
-                 return_train_score=False, random_state=None):
+                 imblearn_pipeline=False, pipeline_options={}, metric='roc_auc', verbose=1, refit_outer=True,
+                 refit_inner=True, return_train_score=False, random_state=None):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
@@ -126,7 +129,8 @@ class NestedCV(BaseEstimator):
         self.pre_dispatch = pre_dispatch
         self.metric = metric
         self.verbose = verbose
-        self.refit = refit
+        self.refit_outer = refit_outer
+        self.refit_inner = refit_inner
         self.return_train_score = return_train_score
         self.random_state = random_state
 
@@ -190,7 +194,7 @@ class NestedCV(BaseEstimator):
             return skPipeline(pipeline_steps)
 
     def _check_is_fitted(self, method_name):
-        if not self.refit:
+        if not self.refit_outer:
             raise NotFittedError('This %s instance was initialized '
                                  'with refit=False. %s is '
                                  'available only after refitting on the best '
@@ -274,7 +278,7 @@ class NestedCV(BaseEstimator):
             y_train_outer, y_test_outer = y[train_outer_index], y[test_outer_index]
             pipeline_inner = GridSearchCV(self.model, self.params_grid, scoring=scorer, n_jobs=self.n_jobs, cv=inner_cv,
                                           return_train_score=self.return_train_score, verbose=self.verbose - 1,
-                                          pre_dispatch=self.pre_dispatch)
+                                          pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
             pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
             self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
                                        'mean_test_score': pipeline_inner.cv_results_['mean_test_score'],
@@ -287,8 +291,7 @@ class NestedCV(BaseEstimator):
                     mean_test_score = pipeline_inner.cv_results_['mean_test_score']
                     index_params_dic = pipeline_inner.cv_results_['params'].index(params_dict)
                     print('\t\t Params: {0}, Mean inner score: {1}'.format(params_dict, mean_test_score[index_params_dic]))
-
-            self.outer_results['best_inner_score'].append(pipeline_inner.best_score_)
+            self.outer_results['best_inner_score'].append(pipeline_inner.cv_results_['mean_test_score'][pipeline_inner.best_index_])  # Because best_score doesn't exist if refit_inner is a callable
             self.outer_results['best_inner_params'].append(pipeline_inner.best_params_)
             if self.return_train_score:
                 self.outer_results['outer_train_score'].append(pipeline_inner.score(X_train_outer, y_train_outer))
@@ -309,10 +312,10 @@ class NestedCV(BaseEstimator):
             print('\n')
 
         # If refit is True Hyperparameter optimization on whole dataset and fit with best params
-        if self.refit:
+        if self.refit_outer:
             print('=== Refit ===')
             pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=scorer, n_jobs=self.n_jobs,
-                                                cv=outer_cv, verbose=self.verbose - 1)
+                                          cv=outer_cv, verbose=self.verbose - 1)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
             self.best_estimator_ = pipeline_refit.best_estimator_
 
