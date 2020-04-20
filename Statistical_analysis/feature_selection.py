@@ -19,7 +19,8 @@ class FeatureSelection(BaseEstimator):
         method: str or callable
             Method used to score/rank features. Either str or callable
             If str inbuild function named as str is called, must be one of following:
-                'mw': scoring with p-value resulting of Mann-Whitney/Kruskall-Wallis test
+                'mw_pvalue': scoring with p-value resulting of Mann-Whitney/Kruskall-Wallis test
+                'wlcx_score': scoring with Wilcoxon score as in Parmar et al. Scientific Reports 2015
                 'auc_roc': scoring with area under the roc curve
                 'pearson_corr': scoring with pearson correlation coefficient between features and labels
                 'spearman_corr': scoring with spearman correlation coefficient between features and labels
@@ -46,8 +47,8 @@ class FeatureSelection(BaseEstimator):
             Choose whether lower score correspond to higher rank for the rank calculation or higher score is better,
             `True` means lower score is better. Determined automatically for inbuild functions
         """
-    scoring_methods = {'name': ['mw', 'auc_roc', 'pearson_corr', 'spearman_corr', 'mi'],
-                       'score_indicator_lower': [True, False, False, False, False]}
+    scoring_methods = {'name': ['mw_pvalue', 'auc_roc', 'pearson_corr', 'spearman_corr', 'mi', 'wlcx_score'],
+                       'score_indicator_lower': [True, False, False, False, False, False]}
     ranking_methods = ['mrmr']
     # TODO: implement more inbuild functions like multivariate selection algorithm
     #  (see skfeature : https://github.com/jundongl/scikit-feature)
@@ -144,23 +145,38 @@ class FeatureSelection(BaseEstimator):
 
     # === Scoring method ===
     @staticmethod
-    def mw(X, y):
+    def mw_pvalue(X, y):
         score = np.array([])
         n_samples, n_features = X.shape
         labels = np.unique(y)
         for i in range(n_features):
             if len(labels) == 2:
-                control_median = np.median(X[:, i][y == labels[0]])
-                case_median = np.median(X[:, i][y == labels[1]])
-                if case_median > control_median:
-                    side = 'greater'
-                else:
-                    side = 'less'
-                statistic, pvalue = mannwhitneyu(X[:, i][y == labels[0]], X[:, i][y == labels[1]], alternative=side)
+                statistic, pvalue = mannwhitneyu(X[:, i][y == labels[0]], X[:, i][y == labels[1]], alternative='two-sided')
             else:
                 X_by_label = [X[:, i][y == i] for _ in labels]
                 statistic, pvalue = kruskal(*X_by_label)
             score = np.append(score, pvalue)
+        return score
+
+
+    @staticmethod
+    def wlcx_score(X, y):
+        """
+        Machine Learning methods for Quantitative Radiomic Biomarkers.
+        Parmar et al. Scientific Reports 2015
+        """
+        score = np.array([])
+        n_samples, n_features = X.shape
+        labels = np.unique(y)
+        for i in range(n_features):
+            ranks = rankdata(X[:, i])
+            class_dic = {}
+            for i in labels:
+                class_dic[i] = {'n': y[y == i].size, 'rank': ranks[y == i]}
+            numerator = np.sum([class_dic[_]['n'] * (class_dic[_]['rank'].mean() - ranks.mean()) ** 2 for _ in labels])
+            denominator = np.sum([np.sum((class_dic[_]['rank'] - ranks.mean()) ** 2) for _ in labels])
+            J = (y.size - 1) * numerator / denominator
+            score = np.append(score, J)
         return score
 
     @staticmethod
