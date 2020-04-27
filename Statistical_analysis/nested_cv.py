@@ -10,7 +10,7 @@ from Statistical_analysis.feature_selection import FeatureSelection
 from sklearn.model_selection._split import check_cv
 from sklearn.base import is_classifier
 from sklearn.model_selection import GridSearchCV
-from sklearn.metrics._scorer import check_scoring
+from sklearn.metrics._scorer import check_scoring, _check_multimetric_scoring
 from sklearn.utils.validation import check_is_fitted
 from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator
@@ -98,13 +98,20 @@ class NestedCV(BaseEstimator):
         or a callable (https://scikit-learn.org/stable/modules/model_evaluation.html#scoring) to evaluate the
         predictions on the test set.
         If None, the estimator’s score method is used.
-        In contrast to sklearn.model_selection.GridSearhCV it does NOT handle multimetric scoring.
+        Multimetric scoring is available for inner loops. If multimetric, outer loop will only be score with metric
+        specified by refit_inner
         See sklearn.model_selection.GridSearchCV for more details.
     verbose: int (default=1)
         Controls the verbosity: the higher, the more messages.
     refit_inner: boolean, string or callable (default=True)
         Refit an estimator using the best found parameters on the whole outer training set
-        Argument will be given to GridsearchCV that select hyperparameters in the inner loop
+        Argument will be given to GridsearchCV that select hyperparameters in the inner loop :
+            For multiple metric evaluation, this needs to be a string denoting the scorer that would be used to find the
+            best parameters for refitting the estimator at the end. Where there are considerations other than maximum
+            score in choosing a best estimator, refit can be set to a function which returns the selected best_index_
+            given cv_results_. In that case, the best_estimator_ and best_parameters_ will be set according to the
+            returned best_index_.The refitted estimator is made available at the best_estimator_ attribute and permits
+            using predict directly on this GridSearchCV instance.
     refit_outer: boolean (default=True)
         Refit an estimator using the whole dataset in two steps:
         1. Hyperparameter optimization with a gridsearch cross-validation (same parameter as outer CV).
@@ -265,37 +272,69 @@ class NestedCV(BaseEstimator):
         outer_cv = check_cv(self.outer_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
         inner_cv = check_cv(self.inner_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
 
-        self.outer_models = {'train': [], 'test': [], 'model': []}
+        self.outer_models = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': [],
+                             'predict_proba_train': [], 'predict_proba_test': []}
         self.outer_results = {'outer_test_score': [], 'best_inner_score': [], 'best_inner_params': []}
         self.inner_results = []
         if self.return_train_score:
             self.outer_results.update({'outer_train_score': []})
-        scorer = check_scoring(self.model, scoring=self.metric)
+
+        # From sklearn.model_selection._search.BasesearchCV
+        scorers, self.multimetric_ = _check_multimetric_scoring(self.model, scoring=self.metric)
+        if self.multimetric_:
+            if callable(self.refit_inner):
+                raise ValueError('If inner loops use multimetric scoring and the user want to refit according to a '
+                                 'callable, the latter must be passed in a dictionnary {score: callable} with score '
+                                 'being the score name with which the score on different sets wiil be calculated')
+            if self.refit_inner is not False and (not isinstance(self.refit_inner, str) or
+                                                  # This will work for both dict / list (tuple)
+                                                  self.refit_inner not in scorers):
+                if isinstance(self.refit_inner, Mapping):
+                    if len(self.refit_inner.keys()) > 1:
+                        raise ValueError(
+                            'refit_inner dict must have only one key, got %d' % len(self.refit_inner.keys()))
+                    self.refit_metric = list(self.refit_inner.keys())[0]
+                    self.refit_inner = self.refit_inner[self.refit_metric]
+                else:
+                    raise ValueError("For multi-metric scoring, the parameter "
+                                     "refit must be set to a scorer key or a "
+                                     "dict with scorer key and callable value to refit an estimator with the "
+                                     "best parameter setting on the whole "
+                                     "data and make the best_* attributes "
+                                     "available for that metric. If this is "
+                                     "not needed, refit should be set to "
+                                     "False explicitly. %r was passed."
+                                     % self.refit_inner)
+            else:
+                self.refit_metric = self.refit_inner
+        else:
+            self.refit_metric = 'score'
+
         for k_outer, (train_outer_index, test_outer_index) in enumerate(outer_cv.split(X, y, groups)):
             if self.verbose > 1:
                 print('\n-----------------\n{0}/{1} <-- Current outer fold'.format(k_outer + 1, outer_cv.get_n_splits()))
             X_train_outer, X_test_outer = X[train_outer_index], X[test_outer_index]
             y_train_outer, y_test_outer = y[train_outer_index], y[test_outer_index]
-            pipeline_inner = GridSearchCV(self.model, self.params_grid, scoring=scorer, n_jobs=self.n_jobs, cv=inner_cv,
+            pipeline_inner = GridSearchCV(self.model, self.params_grid, scoring=scorers, n_jobs=self.n_jobs, cv=inner_cv,
                                           return_train_score=self.return_train_score, verbose=self.verbose - 1,
                                           pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
             pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
             self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
-                                       'mean_test_score': pipeline_inner.cv_results_['mean_test_score'],
-                                       'std_test_score': pipeline_inner.cv_results_['std_test_score']})
+                                       'mean_test_score': pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric],
+                                       'std_test_score': pipeline_inner.cv_results_['std_test_%s' % self.refit_metric]})
             if self.return_train_score:
-                self.inner_results[-1].update({'mean_train_score': pipeline_inner.cv_results_['mean_train_score'],
-                                               'std_train_score': pipeline_inner.cv_results_['std_train_score']})
+                self.inner_results[-1].update({'mean_train_score': pipeline_inner.cv_results_['mean_train_%s' % self.refit_metric],
+                                               'std_train_score': pipeline_inner.cv_results_['std_train_%s' % self.refit_metric]})
             if self.verbose > 2:
                 for params_dict in pipeline_inner.cv_results_['params']:
-                    mean_test_score = pipeline_inner.cv_results_['mean_test_score']
+                    mean_test_score = pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric]
                     index_params_dic = pipeline_inner.cv_results_['params'].index(params_dict)
                     print('\t\t Params: {0}, Mean inner score: {1}'.format(params_dict, mean_test_score[index_params_dic]))
-            self.outer_results['best_inner_score'].append(pipeline_inner.cv_results_['mean_test_score'][pipeline_inner.best_index_])  # Because best_score doesn't exist if refit_inner is a callable
+            self.outer_results['best_inner_score'].append(pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric][pipeline_inner.best_index_])  # Because best_score doesn't exist if refit_inner is a callable
             self.outer_results['best_inner_params'].append(pipeline_inner.best_params_)
             if self.return_train_score:
-                self.outer_results['outer_train_score'].append(pipeline_inner.score(X_train_outer, y_train_outer))
-            self.outer_results['outer_test_score'].append(pipeline_inner.score(X_test_outer, y_test_outer))
+                self.outer_results['outer_train_score'].append(scorers[self.refit_metric](pipeline_inner.best_estimator_, X_train_outer, y_train_outer))
+            self.outer_results['outer_test_score'].append(scorers[self.refit_metric](pipeline_inner.best_estimator_, X_test_outer, y_test_outer))
             if self.verbose > 1:
                 print('\nResults for outer fold:\nBest inner parameters was: {0}'.format(self.outer_results['best_inner_params'][-1]))
                 print('Outer score: {0}'.format(self.outer_results['outer_test_score'][-1]))
@@ -303,6 +342,10 @@ class NestedCV(BaseEstimator):
             self.outer_models['train'].append(train_outer_index)
             self.outer_models['test'].append(test_outer_index)
             self.outer_models['model'].append(pipeline_inner.best_estimator_)
+            self.outer_models['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
+            self.outer_models['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
+            self.outer_models['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
+            self.outer_models['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
         if self.verbose > 0:
             print('\nOverall outer score (mean +/- std): {0} +/- {1}'.format(np.mean(self.outer_results['outer_test_score']),
                                                                              np.std(self.outer_results['outer_test_score'])))
@@ -311,10 +354,13 @@ class NestedCV(BaseEstimator):
                 print('\t Outer fold {0}: {1}'.format(i + 1, params_dict))
             print('\n')
 
+        # Store the only scorer not as a dict for single metric evaluation
+        self.scorer_ = scorers if self.multimetric_ else scorers['score']
+
         # If refit is True Hyperparameter optimization on whole dataset and fit with best params
         if self.refit_outer:
             print('=== Refit ===')
-            pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=scorer, n_jobs=self.n_jobs,
+            pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=scorers[self.refit_metric], n_jobs=self.n_jobs,
                                           cv=outer_cv, verbose=self.verbose - 1)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
             self.best_estimator_ = pipeline_refit.best_estimator_
@@ -340,7 +386,12 @@ class NestedCV(BaseEstimator):
         score : float
         """
         self._check_is_fitted('score')
-        return self.best_estimator_.score(X, y)
+        if self.scorer_ is None:
+            raise ValueError("No score function explicitly defined, "
+                             "and the estimator doesn't provide one %s"
+                             % self.best_estimator_)
+        score = self.scorer_[self.refit_metric] if self.multimetric_ else self.scorer_
+        return score(self.best_estimator_, X, y)
 
     def predict(self, X):
         """Call predict on the estimator with the best found parameters.
