@@ -2,19 +2,27 @@ import string
 import warnings
 import numpy as np
 import pandas as pd
+import tempfile
+import shutil
+import os
+import uuid
+import ast
 from collections.abc import Mapping
 from sklearn.pipeline import Pipeline as skPipeline
 from imblearn.pipeline import Pipeline as imbPipeline
 from Statistical_analysis.dimensionality_reduction import DimensionalityReduction
 from Statistical_analysis.feature_selection import FeatureSelection
-from sklearn.model_selection._split import check_cv
+from sklearn.model_selection._split import check_cv, _RepeatedSplits
 from sklearn.base import is_classifier
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics._scorer import check_scoring, _check_multimetric_scoring
+from sklearn.model_selection import GridSearchCV, ParameterGrid
+from sklearn.metrics._scorer import check_scoring, _check_multimetric_scoring, make_scorer
 from sklearn.utils.validation import check_is_fitted
 from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator
-
+from sklearn.metrics._scorer import _PredictScorer, _ProbaScorer, _ThresholdScorer
+from scipy.stats import rankdata
+from natsort import natsorted
+from joblib import dump, load
 
 class NestedCV(BaseEstimator):
     """
@@ -122,10 +130,23 @@ class NestedCV(BaseEstimator):
         the overfitting/underfitting trade-off. However computing the scores on the training set can be
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
+    random_state: int, RandomState instance (default=None)
+        The seed of the pseudo random number generator to use when shuffling the data. If int, random_state is the seed
+        used by the random number generator; If RandomState instance, random_state is the random number generator; If
+        None, the random number generator is the RandomState instance used by np.random.
+    get_pred: boolean (default=False)
+        If true retrieve the prediction of each outer model and each inner model with each parameter
+    cv_type: str (default='normal')
+        Either normal or LOOCV
+        - Normal : Cross validation as in GridsearchCV from sklearn, i.e. for each fold the score is caclulated on
+        the current validation set then the score of the current model is the mean of score of each fold
+        - LOOCV : For each fold the prediction instead of the score will be predicted. Then all the prediction will
+        be concatenated to calculate a unique score on all folds (if Repeated cross validation, the process will be
+        repeated at each repetition)
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options={}, metric='roc_auc', verbose=1, refit_outer=True,
-                 refit_inner=True, return_train_score=False, random_state=None):
+                 refit_inner=True, return_train_score=False, random_state=None, get_pred=True, cv_type='normal'):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
@@ -140,6 +161,8 @@ class NestedCV(BaseEstimator):
         self.refit_inner = refit_inner
         self.return_train_score = return_train_score
         self.random_state = random_state
+        self.get_pred = get_pred
+        self.cv_type = cv_type
 
     @staticmethod
     def _string_processing(key):
@@ -224,6 +247,23 @@ class NestedCV(BaseEstimator):
             y = np.array(y)
         return X, y
 
+    def make_inner_scorer(self, estimator, X, y):
+        params = {}
+        actual_params = estimator.get_params()
+        for param_dic in self.params_grid:
+            for param_name in param_dic:
+                step, param = param_name.split('__')
+                step_param = actual_params[step].get_params()
+                params[param_name] = step_param[param]
+        save_dic = {'params': params, 'y_pred': estimator.predict(X).tolist(),
+                    'y_proba': estimator.predict_proba(X).tolist(),
+                    'y_decision': estimator.decision_function(X).tolist(),
+                    'X': X.tolist(), 'y': y.tolist()}
+        with open(os.path.join(self.temp_dir, uuid.uuid4().hex), 'wb') as f:
+                dump(save_dic, f)
+        scorer = self.scorers[self.refit_metric]
+        return scorer(estimator, X, y)
+
     def fit(self, X, y=None, groups=None, **fit_params):
         """
         Fit Nested CV with all sets of parameters.
@@ -245,10 +285,12 @@ class NestedCV(BaseEstimator):
             -------
             It will not return directly the values, but it's accessable from the class object it self.
             You should be able to access:
-            outer_models
-                 A dictionary to access the train indexes, the test indexes and the model  of each outer loop
-                 for further post-processing. Keys are respectively train, test and model with values being
-                 lists of length outer_cv.get_n_splits().
+            outer_pred
+                 A dictionary to access the train indexes, the test indexes and the model and the predictions
+                of each outer loop for further post-processing.
+                Keys are ['train', 'test', 'model', 'predict_test', 'predict_proba_test', 'decision_function_test']
+                with values being lists of length outer_cv.get_n_splits(). Only available if get_pred is True.
+                Train predictions also available if return_train_score is True
             outer_results
                 A dictionary to access the outer test scores, the best inner scores, the best inner parameters (and
                 outer_train_scores if return_train_score == True). Keys are respectively outer_test_score,
@@ -263,7 +305,7 @@ class NestedCV(BaseEstimator):
                 Model when refit on the whole dataset with hyperparameter optimized by GridSearch CV.
                 Available only if refit == True.
         """
-        X, y = self._check_X_Y(X, y)
+        self.X, self.y = self._check_X_Y(X, y)
 
         self._check_pipeline_dic(self.pipeline_dic)
         self.model = self._get_pipeline(self.pipeline_dic)
@@ -272,15 +314,11 @@ class NestedCV(BaseEstimator):
         outer_cv = check_cv(self.outer_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
         inner_cv = check_cv(self.inner_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
 
-        self.outer_models = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': [],
-                             'predict_proba_train': [], 'predict_proba_test': []}
-        self.outer_results = {'outer_test_score': [], 'best_inner_score': [], 'best_inner_params': []}
-        self.inner_results = []
-        if self.return_train_score:
-            self.outer_results.update({'outer_train_score': []})
+        if self.cv_type == 'LOOCV' and not self.get_pred:
+            raise ValueError('If cv_type is LOOCV then get_pred must be True to access to prediction of each model')
 
         # From sklearn.model_selection._search.BasesearchCV
-        scorers, self.multimetric_ = _check_multimetric_scoring(self.model, scoring=self.metric)
+        self.scorers, self.multimetric_ = _check_multimetric_scoring(self.model, scoring=self.metric)
         if self.multimetric_:
             if callable(self.refit_inner):
                 raise ValueError('If inner loops use multimetric scoring and the user want to refit according to a '
@@ -288,7 +326,7 @@ class NestedCV(BaseEstimator):
                                  'being the score name with which the score on different sets wiil be calculated')
             if self.refit_inner is not False and (not isinstance(self.refit_inner, str) or
                                                   # This will work for both dict / list (tuple)
-                                                  self.refit_inner not in scorers):
+                                                  self.refit_inner not in self.scorers):
                 if isinstance(self.refit_inner, Mapping):
                     if len(self.refit_inner.keys()) > 1:
                         raise ValueError(
@@ -309,16 +347,114 @@ class NestedCV(BaseEstimator):
                 self.refit_metric = self.refit_inner
         else:
             self.refit_metric = 'score'
+            if self.refit_inner is True:
+                self.refit_inner = 'score'
 
-        for k_outer, (train_outer_index, test_outer_index) in enumerate(outer_cv.split(X, y, groups)):
+        if self.get_pred:
+            self.scorers.update({'inner_pred': self.make_inner_scorer})
+            self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_test': [], 'predict_proba_test': [],
+                               'decision_function_test': []}
+            if self.return_train_score:
+                self.outer_pred.update({'predict_train': [], 'predict_proba_train': [], 'decision_function_train': []})
+            self.inner_pred = []
+        self.outer_results = {'outer_test_score': [], 'best_inner_score': [], 'best_inner_params': []}
+        if self.return_train_score:
+            self.outer_results.update({'outer_train_score': []})
+        self.inner_results = []
+
+        for k_outer, (train_outer_index, test_outer_index) in enumerate(outer_cv.split(self.X, self.y, groups=groups)):
             if self.verbose > 1:
                 print('\n-----------------\n{0}/{1} <-- Current outer fold'.format(k_outer + 1, outer_cv.get_n_splits()))
-            X_train_outer, X_test_outer = X[train_outer_index], X[test_outer_index]
-            y_train_outer, y_test_outer = y[train_outer_index], y[test_outer_index]
-            pipeline_inner = GridSearchCV(self.model, self.params_grid, scoring=scorers, n_jobs=self.n_jobs, cv=inner_cv,
+            X_train_outer, X_test_outer = self.X[train_outer_index], self.X[test_outer_index]
+            y_train_outer, y_test_outer = self.y[train_outer_index], self.y[test_outer_index]
+            if self.get_pred:
+                self.temp_dir = tempfile.mkdtemp()
+            pipeline_inner = GridSearchCV(self.model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
                                           return_train_score=self.return_train_score, verbose=self.verbose - 1,
                                           pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
             pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
+            if self.get_pred:
+                inner_cv_pred = {}
+                for temp_file in os.listdir(self.temp_dir):
+                    with open(os.path.join(self.temp_dir, temp_file), 'rb') as f:
+                        buffer_dic = load(f)
+                        for key, value in buffer_dic.items():
+                            if key not in inner_cv_pred:
+                                inner_cv_pred[key] = [value.copy()]
+                            else:
+                                inner_cv_pred[key].append(value.copy())
+                        del buffer_dic
+                shutil.rmtree(self.temp_dir)
+                # self.inner_pred.append(inner_cv_pred)
+
+                if self.cv_type == 'LOOCV':
+                    n_splits = self.inner_cv.get_n_splits()
+                    if isinstance(self.inner_cv, _RepeatedSplits):
+                        n_repeats = self.inner_cv.n_repeats
+                    else:
+                        n_repeats = 1
+                    scorer_type = {'y_pred': isinstance(self.scorers[self.refit_metric], _PredictScorer),
+                                   'y_proba': isinstance(self.scorers[self.refit_metric], _ProbaScorer),
+                                   'y_decision': isinstance(self.scorers[self.refit_metric], _ThresholdScorer)}
+                    scorer_type = [key for key, value in scorer_type.items() if value][0]
+                    scorer_sign = self.scorers[self.refit_metric]._sign  # 1 if greater is better -1 otherwise
+                    score_func = self.scorers[self.refit_metric]._score_func
+                    score_kwargs = self.scorers[self.refit_metric]._kwargs
+
+                    split_dic = {'test': []}
+                    if self.return_train_score:
+                        split_dic.update({'train': []})
+                    unique_split_len = np.unique([len(_) for _ in inner_cv_pred['y']])
+                    for split in split_dic:
+                        if split == 'train':
+                            split_len = sorted(unique_split_len)[len(unique_split_len) // 2:]
+                        else:
+                            split_len = sorted(unique_split_len)[:len(unique_split_len) // 2]
+                        split_mask = np.array([True if len(_) in split_len else False for _ in inner_cv_pred['y']])
+                        split_dic[split] = {key: np.array(value)[split_mask] for key, value in inner_cv_pred.items()}
+                        split_dic[split]['indices'] = [natsorted([list(self.X[:, 0]).index(_) for _ in set(self.X[:, 0]).intersection(np.array(fold_X)[:, 0])]) for fold_X in split_dic[split]['X']]
+
+                    loocv_results = {}
+                    for split in split_dic:
+                        unique_params = [ast.literal_eval(_) for _ in np.unique(np.array(split_dic[split]['params']).astype(str))]
+                        unique_params.sort(key=lambda i: i[list(i.keys())[0]])
+                        if 'params' not in loocv_results.keys():
+                            loocv_results['params'] = unique_params
+                        else:
+                            if loocv_results['params'] != unique_params:
+                                raise ValueError('Train and test params are different')
+                        ordered_indices = []
+                        for train, test in self.inner_cv.split(X_train_outer, y_train_outer, groups=groups):
+                            if split == 'test':
+                                ordered_indices.append(train_outer_index[test].tolist())
+                            else:
+                                ordered_indices.append(train_outer_index[train].tolist())
+                        for params_dict in unique_params:
+                            params_dict_index = np.where(np.array(split_dic[split]['params']) == params_dict)[0] # Get the indexes of the current param
+                            params_folds = [ordered_indices.index(split_dic[split]['indices'][_]) for _ in params_dict_index]  # List of fold for each param_dict_index
+                            params_dict_index_sorted = params_dict_index[np.array(params_folds).argsort()]  # Order the index to be in fold order
+                            results_repeats = []
+                            for folds in range(0, n_splits, int(n_splits / n_repeats)):
+                                repeat_index = params_dict_index_sorted[folds:int(folds + n_splits / n_repeats)]
+                                y_true = np.concatenate(np.array(split_dic[split]['y'])[repeat_index])
+                                y_pred = np.concatenate(np.array(split_dic[split][scorer_type])[repeat_index])
+                                results_repeats.append(score_func(y_true, y_pred, **score_kwargs))
+                            if 'mean_%s_%s' % (split, self.refit_metric) not in loocv_results.keys():
+                                loocv_results['mean_%s_%s' % (split, self.refit_metric)] = [np.mean(results_repeats)]
+                                loocv_results['std_%s_%s' % (split, self.refit_metric)] = [np.std(results_repeats)]
+                            else:
+                                loocv_results['mean_%s_%s' % (split, self.refit_metric)].append(np.mean(results_repeats))
+                                loocv_results['std_%s_%s' % (split, self.refit_metric)].append(np.std(results_repeats))
+                        if split == 'test':
+                            loocv_results['rank_test_%s' % self.refit_metric] = np.asarray(rankdata(-scorer_sign * np.array(loocv_results['mean_test_%s' % self.refit_metric]),
+                                                                                                    method='min'),
+                                                                                           dtype=np.int32)
+                    cv_results_params_order = np.array([list(loocv_results['params']).index(_) for _ in pipeline_inner.cv_results_['params']])
+                    for key in loocv_results:
+                        pipeline_inner.cv_results_[key] = np.array(loocv_results[key])[cv_results_params_order]
+                    if callable(self.refit_inner):
+                        pipeline_inner.best_index_ = self.refit_inner(pipeline_inner.cv_results_)
+
             self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
                                        'mean_test_score': pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric],
                                        'std_test_score': pipeline_inner.cv_results_['std_test_%s' % self.refit_metric]})
@@ -330,22 +466,28 @@ class NestedCV(BaseEstimator):
                     mean_test_score = pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric]
                     index_params_dic = pipeline_inner.cv_results_['params'].index(params_dict)
                     print('\t\t Params: {0}, Mean inner score: {1}'.format(params_dict, mean_test_score[index_params_dic]))
-            self.outer_results['best_inner_score'].append(pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric][pipeline_inner.best_index_])  # Because best_score doesn't exist if refit_inner is a callable
-            self.outer_results['best_inner_params'].append(pipeline_inner.best_params_)
+            self.outer_results['best_inner_score'].append(pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric][pipeline_inner.best_index_])
+            self.outer_results['best_inner_params'].append(pipeline_inner.cv_results_['params'][pipeline_inner.best_index_])
             if self.return_train_score:
-                self.outer_results['outer_train_score'].append(scorers[self.refit_metric](pipeline_inner.best_estimator_, X_train_outer, y_train_outer))
-            self.outer_results['outer_test_score'].append(scorers[self.refit_metric](pipeline_inner.best_estimator_, X_test_outer, y_test_outer))
+                self.outer_results['outer_train_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_train_outer, y_train_outer))
+            self.outer_results['outer_test_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_test_outer, y_test_outer))
             if self.verbose > 1:
                 print('\nResults for outer fold:\nBest inner parameters was: {0}'.format(self.outer_results['best_inner_params'][-1]))
                 print('Outer score: {0}'.format(self.outer_results['outer_test_score'][-1]))
                 print('Inner score: {0}'.format(self.outer_results['best_inner_score'][-1]))
-            self.outer_models['train'].append(train_outer_index)
-            self.outer_models['test'].append(test_outer_index)
-            self.outer_models['model'].append(pipeline_inner.best_estimator_)
-            self.outer_models['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
-            self.outer_models['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
-            self.outer_models['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
-            self.outer_models['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
+            if self.get_pred:
+                    self.outer_pred['train'].append(train_outer_index)
+                    self.outer_pred['test'].append(test_outer_index)
+                    self.outer_pred['model'].append(pipeline_inner.best_estimator_)
+                    self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
+                    self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
+                    self.outer_pred['decision_function_test'].append(pipeline_inner.best_estimator_.decision_function(X_test_outer))
+                    if self.return_train_score:
+                        self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
+                        self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
+                        self.outer_pred['decision_function_train'].append(pipeline_inner.best_estimator_.decision_function(X_train_outer))
+        # TODO : if LOOCV group preds from outer loops to calculate outer_train and outer_test score as in inner loop
+        #  but quid of different hyperparameters selected in each fold ? Ignore it ? Do it in post process?
         if self.verbose > 0:
             print('\nOverall outer score (mean +/- std): {0} +/- {1}'.format(np.mean(self.outer_results['outer_test_score']),
                                                                              np.std(self.outer_results['outer_test_score'])))
@@ -355,12 +497,12 @@ class NestedCV(BaseEstimator):
             print('\n')
 
         # Store the only scorer not as a dict for single metric evaluation
-        self.scorer_ = scorers if self.multimetric_ else scorers['score']
+        self.scorer_ = self.scorers if self.multimetric_ else self.scorers['score']
 
         # If refit is True Hyperparameter optimization on whole dataset and fit with best params
         if self.refit_outer:
             print('=== Refit ===')
-            pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=scorers[self.refit_metric], n_jobs=self.n_jobs,
+            pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=self.scorers[self.refit_metric], n_jobs=self.n_jobs,
                                           cv=outer_cv, verbose=self.verbose - 1)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
             self.best_estimator_ = pipeline_refit.best_estimator_
