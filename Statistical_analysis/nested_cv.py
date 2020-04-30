@@ -406,6 +406,9 @@ class NestedCV(BaseEstimator):
                         split_dic.update({'train': []})
                     unique_split_len = np.unique([len(_) for _ in inner_cv_pred['y']])
                     for split in split_dic:
+                        # This doesn't work to detect train and test split 
+                        # for 2folds CV because folds are equally (or nearly equally) sized. 
+                        # TODO : other mean to detect train split and validation split ?
                         if split == 'train':
                             split_len = sorted(unique_split_len)[len(unique_split_len) // 2:]
                         else:
