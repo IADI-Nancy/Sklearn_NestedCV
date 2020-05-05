@@ -20,7 +20,7 @@ def statistical_pipeline(X, y, save_dir=None, seed=111):
 
     # NestedCV with outer loop and inner loop being 5Fold Stratified cross validation repeated 5 times
     # Pipeline = Z-score normalization + SMOTE + Dimensionality reduction with Hierarchical clustering +
-    #            Feature selection with MW test score + SVM classifier
+    #            Feature selection with Wilcoxon score + SVM classifier
 
     outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=5, random_state=seed)
     inner_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=5, random_state=seed)
