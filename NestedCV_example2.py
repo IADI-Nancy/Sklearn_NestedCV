@@ -27,7 +27,7 @@ def statistical_pipeline(X, y, save_dir=None, seed=111):
     pipeline_dic = {'scale': StandardScaler,
                     'oversampling': imblearn.over_sampling.SMOTE,
                     'DimensionalityReduction': 'hierarchical_clust_leger',
-                    'FeatureSelection': 'mw',
+                    'FeatureSelection': 'wlcx_score',
                     'classifier': SVC}
     params_dic = {'classifier': {'C': 1 / np.arange(0.1, 1.1, 0.2)},
                   'FeatureSelection': {'n_selected_features': [10, 20, None]}}
