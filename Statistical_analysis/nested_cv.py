@@ -245,7 +245,7 @@ class NestedCV(BaseEstimator):
             -------
             It will not return directly the values, but it's accessable from the class object it self.
             You should be able to access:
-            outer_models
+            outer_pred
                  A dictionary to access the train indexes, the test indexes and the model  of each outer loop
                  for further post-processing. Keys are respectively train, test and model with values being
                  lists of length outer_cv.get_n_splits().
@@ -272,7 +272,7 @@ class NestedCV(BaseEstimator):
         outer_cv = check_cv(self.outer_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
         inner_cv = check_cv(self.inner_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
 
-        self.outer_models = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': [],
+        self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': [],
                              'predict_proba_train': [], 'predict_proba_test': []}
         self.outer_results = {'outer_test_score': [], 'best_inner_score': [], 'best_inner_params': []}
         self.inner_results = []
@@ -339,13 +339,13 @@ class NestedCV(BaseEstimator):
                 print('\nResults for outer fold:\nBest inner parameters was: {0}'.format(self.outer_results['best_inner_params'][-1]))
                 print('Outer score: {0}'.format(self.outer_results['outer_test_score'][-1]))
                 print('Inner score: {0}'.format(self.outer_results['best_inner_score'][-1]))
-            self.outer_models['train'].append(train_outer_index)
-            self.outer_models['test'].append(test_outer_index)
-            self.outer_models['model'].append(pipeline_inner.best_estimator_)
-            self.outer_models['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
-            self.outer_models['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
-            self.outer_models['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
-            self.outer_models['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
+            self.outer_pred['train'].append(train_outer_index)
+            self.outer_pred['test'].append(test_outer_index)
+            self.outer_pred['model'].append(pipeline_inner.best_estimator_)
+            self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
+            self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
+            self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
+            self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
         if self.verbose > 0:
             print('\nOverall outer score (mean +/- std): {0} +/- {1}'.format(np.mean(self.outer_results['outer_test_score']),
                                                                              np.std(self.outer_results['outer_test_score'])))
