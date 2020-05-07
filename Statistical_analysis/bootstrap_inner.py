@@ -259,7 +259,7 @@ class Bootstrap_inner():
         n_candidates = len(candidate_params)
 
         if self.verbose > 0:
-            print("Fitting {0} folds for each of {1} candidates,"
+            print("Fitting {0} bootstrap samples for each of {1} candidates,"
                   " totalling {2} fits".format(n_splits, n_candidates, n_candidates * n_splits))
 
         out = parallel(delayed(self.bootstrap_point632_score)(clone(base_estimator), parameters, X, y, train, test,
