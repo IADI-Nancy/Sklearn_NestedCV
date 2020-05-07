@@ -23,6 +23,9 @@ from collections import defaultdict
 from functools import partial
 from sklearn.utils.fixes import MaskedArray
 import numbers
+import time
+from sklearn.utils import _message_with_time
+from sklearn.model_selection._validation import _aggregate_score_dicts
 
 
 class NestedCV(BaseEstimator):
@@ -214,6 +217,7 @@ class NestedCV(BaseEstimator):
             return skPipeline(pipeline_steps)
 
     def _check_is_fitted(self, method_name):
+        # From sklearn.model_selection.BaseSearchCV
         if not self.refit_outer:
             raise NotFittedError('This %s instance was initialized '
                                  'with refit=False. %s is '
@@ -237,38 +241,53 @@ class NestedCV(BaseEstimator):
             y = np.array(y)
         return X, y
 
-    def _format_results(self, results):
-        new_results = {'params': []}
-        splits_stored = ['test','train'] if self.return_train_score else ['test']
-        for scorer_name in self.scorers:
-            new_results.update({'split%d_test_%s' % (_, scorer_name): [] for _ in range(self.n_bsamples)})
-            new_results.update({'mean_test_%s' % scorer_name: []})
-            new_results.update({'std_test_%s' % scorer_name: []})
-            if self.return_train_score:
-                new_results.update({'split%d_train_%s' % (_, scorer_name): [] for _ in range(self.n_bsamples)})
-                new_results.update({'mean_train_%s' % scorer_name: []})
-                new_results.update({'std_train_%s' % scorer_name: []})
-        for param_results, params_dic in results:
-            new_results['params'].append(params_dic)
-            for split in splits_stored:
-                if split == 'test':
-                    weights = param_results['test_counts']
-                else:
-                    weights = None
-                for scorer_name in param_results[split]:
-                    bsamples_scores = param_results[split][scorer_name]
-                    for i in range(len(bsamples_scores)):
-                        new_results['split%d_%s_%s' % (i, split, scorer_name)].append(bsamples_scores[i])
-                    array_mean = np.average(bsamples_scores, weights=weights)
-                    new_results['mean_%s_%s' % (split, scorer_name)].append(array_mean)
-                    array_std = np.sqrt(np.average((bsamples_scores - array_mean) ** 2, weights=weights))
-                    new_results['std_%s_%s' % (split, scorer_name)].append(array_std)
-        new_results = {_: np.asarray(new_results[_]) for _ in new_results}
-        for scorer_name in self.scorers:
-            new_results["rank_test_%s" % scorer_name] = np.asarray(rankdata(-new_results['mean_test_%s' % scorer_name],
-                                                                            method='min'), dtype=np.int32)
-        n_candidates = len(new_results['params'])
-        candidate_params = new_results['params']
+    def _format_results(self, candidate_params, scorers, n_splits, out):
+        # From sklearn.model_selection.BaseSearchCV
+        n_candidates = len(candidate_params)
+
+        # if one choose to see train score, "out" will contain train score info
+        if self.return_train_score:
+            (train_score_dicts, test_score_dicts, fit_time, score_time) = zip(*out)
+        else:
+            (test_score_dicts, fit_time, score_time) = zip(*out)
+
+        # test_score_dicts and train_score dicts are lists of dictionaries and
+        # we make them into dict of lists
+        test_scores = _aggregate_score_dicts(test_score_dicts)
+        if self.return_train_score:
+            train_scores = _aggregate_score_dicts(train_score_dicts)
+
+        results = {}
+
+        def _store(key_name, array, weights=None, splits=False, rank=False):
+            """A small helper to store the scores/times to the cv_results_"""
+            # When iterated first by splits, then by parameters
+            # We want `array` to have `n_candidates` rows and `n_splits` cols.
+            array = np.array(array, dtype=np.float64).reshape(n_candidates,
+                                                              n_splits)
+            if splits:
+                for split_i in range(n_splits):
+                    # Uses closure to alter the results
+                    results["split%d_%s"
+                            % (split_i, key_name)] = array[:, split_i]
+
+            array_means = np.average(array, axis=1, weights=weights)
+            results['mean_%s' % key_name] = array_means
+            # Weighted std is not directly available in numpy
+            array_stds = np.sqrt(np.average((array -
+                                             array_means[:, np.newaxis]) ** 2,
+                                            axis=1, weights=weights))
+            results['std_%s' % key_name] = array_stds
+
+            if rank:
+                results["rank_%s" % key_name] = np.asarray(
+                    rankdata(-array_means, method='min'), dtype=np.int32)
+
+        _store('fit_time', fit_time)
+        _store('score_time', score_time)
+        # Use one MaskedArray and mask all the places where the param is not
+        # applicable for that candidate. Use defaultdict as each candidate may
+        # not contain all the params
         param_results = defaultdict(partial(MaskedArray,
                                             np.empty(n_candidates, ),
                                             mask=True,
@@ -279,9 +298,18 @@ class NestedCV(BaseEstimator):
                 # `"param_%s" % name` at the first occurrence of `name`.
                 # Setting the value at an index also unmasks that index
                 param_results["param_%s" % name][cand_i] = value
-        new_results.update(param_results)
 
-        return new_results
+        results.update(param_results)
+        # Store a list of param dicts at the key 'params'
+        results['params'] = candidate_params
+
+        for scorer_name in scorers.keys():
+            # Computed the (weighted) mean and std for test scores alone
+            _store('test_%s' % scorer_name, test_scores[scorer_name], splits=True, rank=True)
+            if self.return_train_score:
+                _store('train_%s' % scorer_name, train_scores[scorer_name], splits=True)
+
+        return results
 
 
     # @staticmethod
@@ -303,7 +331,7 @@ class NestedCV(BaseEstimator):
         qk = np.bincount(y_pred) / len(y_pred)
         return np.sum(pk * (1 - qk))
 
-    def bootstrap_point632_score(self, estimator, X, y, method, clone_estimator=True, return_train_score=False):
+    def bootstrap_point632_score(self, estimator, parameters, X, y, train, test, method):
         """
         Rewriting of : https://github.com/rasbt/mlxtend/blob/master/mlxtend/evaluate/bootstrap_point632.py
         Implementation of the .632 [1] and .632+ [2] bootstrap
@@ -321,56 +349,75 @@ class NestedCV(BaseEstimator):
         if not isinstance(self.n_bsamples, int) or self.n_bsamples < 1:
             raise ValueError('Number of bootstrap splits must be greater than 1. Got %s.' % self.n_bsamples)
 
-        # _check_arrays(X, y)
+        if self.verbose > 2:
+            if parameters is None:
+                msg = ''
+            else:
+                msg = '%s' % (', '.join('%s=%s' % (k, v)
+                                        for k, v in parameters.items()))
+            print("[Bootstrap_%s] %s %s" % (method, msg, (64 - len(msg)) * '.'))
 
-        if clone_estimator:
-            cloned_est = clone(estimator)
+        if parameters is not None:
+            # clone after setting parameters in case any parameters
+            # are estimators (like pipeline steps)
+            # because pipeline doesn't clone steps in fit
+            cloned_parameters = {}
+            for k, v in parameters.items():
+                cloned_parameters[k] = clone(v, safe=False)
+            estimator.set_params(**cloned_parameters)
+
+        start_time = time.time()
+
+        X_train, y_train = X[train], y[train]
+        X_test, y_test = X[test], y[test]
+
+        estimator.fit(X[train], y[train])
+        fit_time = time.time() - start_time
+        test_scores = {_: self.scorers[_](estimator, X_test, y_test) for _ in self.scorers}
+
+        if self.return_train_score:
+            train_scores = {_: self.scorers[_](estimator, X_train, y_train) for _ in self.scorers}
+
+        if method == 'oob':
+            final_test_scores = test_scores
+            score_time = time.time() - start_time - fit_time
+
         else:
-            cloned_est = estimator
-
-        oob = BootstrapOutOfBag(n_splits=self.n_bsamples, random_seed=self.random_state)
-        test_scores = {_: np.empty(dtype=np.float, shape=(self.n_bsamples,)) for _ in self.scorers}
-        test_counts = []
-        if return_train_score:
-            train_scores = {_: np.empty(dtype=np.float, shape=(self.n_bsamples,)) for _ in self.scorers}
-        cnt = 0
-        for train, test in oob.split(X):
-            cloned_est.fit(X[train], y[train])
-            test_counts.append(test.shape[0])
-            test_acc = {_: self.scorers[_](cloned_est, X[test], y[test]) for _ in self.scorers}
-            if return_train_score:
-                train_acc = {_: self.scorers[_](cloned_est, X[train], y[train]) for _ in self.scorers}
-
-            if method == 'oob':
-                acc = test_acc
+            if not self.return_train_score:
+                train_scores = {_: self.scorers[_](estimator, X_train, y_train) for _ in self.scorers}
+            if method == '.632+':
+                weight = {}
+                for scorer_name in self.scorers:
+                    # gamma = self.no_information_rate(X, y, cloned_est, self.scorers[scorer_name])
+                    gamma = self.no_information_rate(y, estimator.predict(X))  # Only work for classifier
+                    # Original calculation in mlxtend which got an error in denominator
+                    # R = (-(test_acc[scorer_name] - train_acc[scorer_name])) / (gamma - (1 - test_acc[scorer_name]))
+                    R = (test_scores[scorer_name] - train_scores[scorer_name]) / (gamma - train_scores[scorer_name])
+                    weight[scorer_name] = 0.632 / (1 - 0.368 * R)
 
             else:
-                if not return_train_score:
-                    train_acc = {_: self.scorers[_](cloned_est, X[train], y[train]) for _ in self.scorers}
-                if method == '.632+':
-                    weight = {}
-                    for scorer_name in self.scorers:
-                        # gamma = self.no_information_rate(X, y, cloned_est, self.scorers[scorer_name])
-                        gamma = self.no_information_rate(y, cloned_est.predict(X))  # Only work for classifier
-                        # Original calculation in mlxtend which got an error in denominator
-                        # R = (-(test_acc[scorer_name] - train_acc[scorer_name])) / (gamma - (1 - test_acc[scorer_name]))
-                        R = (test_acc[scorer_name] - train_acc[scorer_name]) / (gamma - train_acc[scorer_name])
-                        weight[scorer_name] = 0.632 / (1 - 0.368 * R)
+                weight = {_: 0.632 for _ in self.scorers}
 
-                else:
-                    weight = {_: 0.632 for _ in self.scorers}
+            final_test_scores = {_: weight[_] * test_scores[_] + (1. - weight[_]) * train_scores[_] for _ in self.scorers}
+            score_time = time.time() - start_time - fit_time
 
-                acc = {_: weight[_] * test_acc[_] + (1. - weight[_]) * train_acc[_] for _ in self.scorers}
+            if self.verbose > 3:
+                for scorer_name in sorted(test_scores):
+                    msg += ", %s=" % scorer_name
+                    if self.return_train_score:
+                        msg += "(train=%.3f," % train_scores[scorer_name]
+                        msg += " test=%.3f)" % test_scores[scorer_name]
+                    else:
+                        msg += "%.3f" % test_scores[scorer_name]
 
-            for scorer_name in self.scorers:
-                test_scores[scorer_name][cnt] = acc[scorer_name]
-                if return_train_score:
-                    train_scores[scorer_name][cnt] = train_acc[scorer_name]
-            cnt += 1
-        results_dic = {'test': test_scores, 'test_counts': np.array(test_counts)}
-        if return_train_score:
-            results_dic.update({'train': train_scores})
-        return results_dic
+            if self.verbose > 2:
+                total_time = score_time + fit_time
+                print(_message_with_time('Bootstrap_%s' % method, msg, total_time))
+
+        ret = [train_scores, final_test_scores] if self.return_train_score else [final_test_scores]
+        ret.extend([fit_time, score_time])
+
+        return ret
 
     def fit(self, X, y=None, groups=None, **fit_params):
         """
@@ -482,19 +529,31 @@ class NestedCV(BaseEstimator):
             else:
                 # Inspired from sklearn.model_selection.GridsearchCV
                 base_estimator = clone(self.model)
+                candidate_params = ParameterGrid(self.params_grid)
+                oob = BootstrapOutOfBag(n_splits=self.n_bsamples, random_seed=self.random_state)
+                n_splits = oob.get_n_splits()
                 parallel = Parallel(n_jobs=self.n_jobs, verbose=self.verbose - 1,
                                     pre_dispatch=self.pre_dispatch)
-                params_grid = ParameterGrid(self.params_grid)
 
-                def bootstrap_and_score(estimator, X, y, method, params_dic):
-                    estimator.set_params(**params_dic)
-                    results_dic = self.bootstrap_point632_score(estimator, X, y, method,
-                                                                return_train_score=self.return_train_score)
-                    return results_dic, params_dic
+                all_candidate_params = []
+                all_out = []
 
-                cv_results = parallel(delayed(bootstrap_and_score)(base_estimator, X_train_outer, y_train_outer,
-                                                                   inner_cv, params_dic) for params_dic in params_grid)
-                cv_results = self._format_results(cv_results)
+                candidate_params = list(candidate_params)
+                n_candidates = len(candidate_params)
+
+                if self.verbose > 0:
+                    print("Fitting {0} folds for each of {1} candidates,"
+                          " totalling {2} fits".format(n_splits, n_candidates, n_candidates * n_splits))
+
+                out = parallel(delayed(self.bootstrap_point632_score)(clone(base_estimator), parameters, X_train_outer,
+                                                                      y_train_outer, train, test, inner_cv)
+                               for parameters, (train, test)
+                               in product(candidate_params, oob.split(X_train_outer, y_train_outer)))
+
+                all_candidate_params.extend(candidate_params)
+                all_out.extend(out)
+
+                cv_results = self._format_results(all_candidate_params, self.scorers, n_splits, all_out)
 
                 # If callable, refit is expected to return the index of the best
                 # parameter set.
@@ -509,10 +568,7 @@ class NestedCV(BaseEstimator):
                     best_score = cv_results["mean_test_%s" % self.refit_metric][best_index]
                 best_params = cv_results["params"][best_index]
                 best_estimator = clone(clone(base_estimator).set_params(**best_params))
-                if y is not None:
-                    best_estimator.fit(X_train_outer, y_train_outer, **fit_params)
-                else:
-                    best_estimator.fit(X_train_outer, **fit_params)
+                best_estimator.fit(X_train_outer, y_train_outer, **fit_params)
 
             self.inner_results.append({'params': cv_results['params'],
                                        'mean_test_score': cv_results['mean_test_%s' % self.refit_metric],
