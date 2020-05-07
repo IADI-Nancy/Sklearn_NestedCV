@@ -309,6 +309,8 @@ class NestedCV(BaseEstimator):
                 self.refit_metric = self.refit_inner
         else:
             self.refit_metric = 'score'
+            if self.refit_inner is True:
+                self.refit_inner = 'score'
 
         for k_outer, (train_outer_index, test_outer_index) in enumerate(outer_cv.split(X, y, groups)):
             if self.verbose > 1:
