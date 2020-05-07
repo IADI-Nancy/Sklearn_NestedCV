@@ -7,6 +7,7 @@ from sklearn.pipeline import Pipeline as skPipeline
 from imblearn.pipeline import Pipeline as imbPipeline
 from Statistical_analysis.dimensionality_reduction import DimensionalityReduction
 from Statistical_analysis.feature_selection import FeatureSelection
+from Statistical_analysis.bootstrap_inner import Bootstrap_inner
 from sklearn.model_selection._split import check_cv
 from sklearn.base import is_classifier
 from sklearn.model_selection import GridSearchCV, ParameterGrid
@@ -14,18 +15,6 @@ from sklearn.metrics._scorer import _check_multimetric_scoring
 from sklearn.utils.validation import check_is_fitted
 from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator, clone
-from mlxtend.evaluate import BootstrapOutOfBag
-from sklearn.metrics._scorer import _ProbaScorer, _ThresholdScorer
-from itertools import product
-from joblib import Parallel, delayed
-from scipy.stats import rankdata
-from collections import defaultdict
-from functools import partial
-from sklearn.utils.fixes import MaskedArray
-import numbers
-import time
-from sklearn.utils import _message_with_time
-from sklearn.model_selection._validation import _aggregate_score_dicts
 
 
 class NestedCV(BaseEstimator):
@@ -241,184 +230,6 @@ class NestedCV(BaseEstimator):
             y = np.array(y)
         return X, y
 
-    def _format_results(self, candidate_params, scorers, n_splits, out):
-        # From sklearn.model_selection.BaseSearchCV
-        n_candidates = len(candidate_params)
-
-        # if one choose to see train score, "out" will contain train score info
-        if self.return_train_score:
-            (train_score_dicts, test_score_dicts, fit_time, score_time) = zip(*out)
-        else:
-            (test_score_dicts, fit_time, score_time) = zip(*out)
-
-        # test_score_dicts and train_score dicts are lists of dictionaries and
-        # we make them into dict of lists
-        test_scores = _aggregate_score_dicts(test_score_dicts)
-        if self.return_train_score:
-            train_scores = _aggregate_score_dicts(train_score_dicts)
-
-        results = {}
-
-        def _store(key_name, array, weights=None, splits=False, rank=False):
-            """A small helper to store the scores/times to the cv_results_"""
-            # When iterated first by splits, then by parameters
-            # We want `array` to have `n_candidates` rows and `n_splits` cols.
-            array = np.array(array, dtype=np.float64).reshape(n_candidates,
-                                                              n_splits)
-            if splits:
-                for split_i in range(n_splits):
-                    # Uses closure to alter the results
-                    results["split%d_%s"
-                            % (split_i, key_name)] = array[:, split_i]
-
-            array_means = np.average(array, axis=1, weights=weights)
-            results['mean_%s' % key_name] = array_means
-            # Weighted std is not directly available in numpy
-            array_stds = np.sqrt(np.average((array -
-                                             array_means[:, np.newaxis]) ** 2,
-                                            axis=1, weights=weights))
-            results['std_%s' % key_name] = array_stds
-
-            if rank:
-                results["rank_%s" % key_name] = np.asarray(
-                    rankdata(-array_means, method='min'), dtype=np.int32)
-
-        _store('fit_time', fit_time)
-        _store('score_time', score_time)
-        # Use one MaskedArray and mask all the places where the param is not
-        # applicable for that candidate. Use defaultdict as each candidate may
-        # not contain all the params
-        param_results = defaultdict(partial(MaskedArray,
-                                            np.empty(n_candidates, ),
-                                            mask=True,
-                                            dtype=object))
-        for cand_i, params in enumerate(candidate_params):
-            for name, value in params.items():
-                # An all masked empty array gets created for the key
-                # `"param_%s" % name` at the first occurrence of `name`.
-                # Setting the value at an index also unmasks that index
-                param_results["param_%s" % name][cand_i] = value
-
-        results.update(param_results)
-        # Store a list of param dicts at the key 'params'
-        results['params'] = candidate_params
-
-        for scorer_name in scorers.keys():
-            # Computed the (weighted) mean and std for test scores alone
-            _store('test_%s' % scorer_name, test_scores[scorer_name], splits=True, rank=True)
-            if self.return_train_score:
-                _store('train_%s' % scorer_name, train_scores[scorer_name], splits=True)
-
-        return results
-
-
-    # @staticmethod
-    # def no_information_rate(X, y, estimator, scorer):
-    #     score_func = scorer._score_func
-    #     score_kwargs = scorer._kwargs
-    #     if isinstance(scorer, _ProbaScorer):
-    #         predictions = estimator.predict_proba(X)
-    #     elif isinstance(scorer, _ThresholdScorer):
-    #         predictions = estimator.decision_function(X)
-    #     else:
-    #         predictions = estimator.predict(X)
-    #     combinations = np.array(list(product(y, predictions)))
-    #     return score_func(combinations[:, 0], combinations[:, 1], **score_kwargs)
-
-    @staticmethod
-    def no_information_rate(y_true, y_pred):
-        pk = np.bincount(y_true)/len(y_true)
-        qk = np.bincount(y_pred) / len(y_pred)
-        return np.sum(pk * (1 - qk))
-
-    def bootstrap_point632_score(self, estimator, parameters, X, y, train, test, method):
-        """
-        Rewriting of : https://github.com/rasbt/mlxtend/blob/master/mlxtend/evaluate/bootstrap_point632.py
-        Implementation of the .632 [1] and .632+ [2] bootstrap
-        for supervised learning
-        References:
-        - [1] Efron, Bradley. 1983. "Estimating the Error Rate
-          of a Prediction Rule: Improvement on Cross-Validation."
-          Journal of the American Statistical Association
-          78 (382): 316. doi:10.2307/2288636.
-        - [2] Efron, Bradley, and Robert Tibshirani. 1997.
-          "Improvements on Cross-Validation: The .632+ Bootstrap Method."
-          Journal of the American Statistical Association
-          92 (438): 548. doi:10.2307/2965703.
-        """
-        if not isinstance(self.n_bsamples, int) or self.n_bsamples < 1:
-            raise ValueError('Number of bootstrap splits must be greater than 1. Got %s.' % self.n_bsamples)
-
-        if self.verbose > 2:
-            if parameters is None:
-                msg = ''
-            else:
-                msg = '%s' % (', '.join('%s=%s' % (k, v)
-                                        for k, v in parameters.items()))
-            print("[Bootstrap_%s] %s %s" % (method, msg, (64 - len(msg)) * '.'))
-
-        if parameters is not None:
-            # clone after setting parameters in case any parameters
-            # are estimators (like pipeline steps)
-            # because pipeline doesn't clone steps in fit
-            cloned_parameters = {}
-            for k, v in parameters.items():
-                cloned_parameters[k] = clone(v, safe=False)
-            estimator.set_params(**cloned_parameters)
-
-        start_time = time.time()
-
-        X_train, y_train = X[train], y[train]
-        X_test, y_test = X[test], y[test]
-
-        estimator.fit(X[train], y[train])
-        fit_time = time.time() - start_time
-        test_scores = {_: self.scorers[_](estimator, X_test, y_test) for _ in self.scorers}
-
-        if self.return_train_score:
-            train_scores = {_: self.scorers[_](estimator, X_train, y_train) for _ in self.scorers}
-
-        if method == 'oob':
-            final_test_scores = test_scores
-            score_time = time.time() - start_time - fit_time
-
-        else:
-            if not self.return_train_score:
-                train_scores = {_: self.scorers[_](estimator, X_train, y_train) for _ in self.scorers}
-            if method == '.632+':
-                weight = {}
-                for scorer_name in self.scorers:
-                    # gamma = self.no_information_rate(X, y, cloned_est, self.scorers[scorer_name])
-                    gamma = self.no_information_rate(y, estimator.predict(X))  # Only work for classifier
-                    # Original calculation in mlxtend which got an error in denominator
-                    # R = (-(test_acc[scorer_name] - train_acc[scorer_name])) / (gamma - (1 - test_acc[scorer_name]))
-                    R = (test_scores[scorer_name] - train_scores[scorer_name]) / (gamma - train_scores[scorer_name])
-                    weight[scorer_name] = 0.632 / (1 - 0.368 * R)
-
-            else:
-                weight = {_: 0.632 for _ in self.scorers}
-
-            final_test_scores = {_: weight[_] * test_scores[_] + (1. - weight[_]) * train_scores[_] for _ in self.scorers}
-            score_time = time.time() - start_time - fit_time
-
-            if self.verbose > 3:
-                for scorer_name in sorted(test_scores):
-                    msg += ", %s=" % scorer_name
-                    if self.return_train_score:
-                        msg += "(train=%.3f," % train_scores[scorer_name]
-                        msg += " test=%.3f)" % test_scores[scorer_name]
-                    else:
-                        msg += "%.3f" % test_scores[scorer_name]
-
-            if self.verbose > 2:
-                total_time = score_time + fit_time
-                print(_message_with_time('Bootstrap_%s' % method, msg, total_time))
-
-        ret = [train_scores, final_test_scores] if self.return_train_score else [final_test_scores]
-        ret.extend([fit_time, score_time])
-
-        return ret
-
     def fit(self, X, y=None, groups=None, **fit_params):
         """
         Fit Nested CV with all sets of parameters.
@@ -511,6 +322,8 @@ class NestedCV(BaseEstimator):
                 self.refit_metric = self.refit_inner
         else:
             self.refit_metric = 'score'
+            if self.refit_inner is True:
+                self.refit_inner = 'score'
 
         for k_outer, (train_outer_index, test_outer_index) in enumerate(outer_cv.split(X, y, groups)):
             if self.verbose > 1:
@@ -522,81 +335,41 @@ class NestedCV(BaseEstimator):
                                               return_train_score=self.return_train_score, verbose=self.verbose - 1,
                                               pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
                 pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
-                cv_results = pipeline_inner.cv_results_
-                best_index = pipeline_inner.best_index_
-                best_params = pipeline_inner.best_params_
-                best_estimator = pipeline_inner.best_estimator_
             else:
-                # Inspired from sklearn.model_selection.GridsearchCV
-                base_estimator = clone(self.model)
-                candidate_params = ParameterGrid(self.params_grid)
-                oob = BootstrapOutOfBag(n_splits=self.n_bsamples, random_seed=self.random_state)
-                n_splits = oob.get_n_splits()
-                parallel = Parallel(n_jobs=self.n_jobs, verbose=self.verbose - 1,
-                                    pre_dispatch=self.pre_dispatch)
+                pipeline_inner = Bootstrap_inner(self.model, self.params_grid, scorers=self.scorers, n_jobs=self.n_jobs,
+                                                 method=self.inner_cv, return_train_score=self.return_train_score,
+                                                 verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
+                                                 refit=self.refit_inner, random_state=self.random_state,
+                                                 n_bsamples=self.n_bsamples)
+                pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
 
-                all_candidate_params = []
-                all_out = []
-
-                candidate_params = list(candidate_params)
-                n_candidates = len(candidate_params)
-
-                if self.verbose > 0:
-                    print("Fitting {0} folds for each of {1} candidates,"
-                          " totalling {2} fits".format(n_splits, n_candidates, n_candidates * n_splits))
-
-                out = parallel(delayed(self.bootstrap_point632_score)(clone(base_estimator), parameters, X_train_outer,
-                                                                      y_train_outer, train, test, inner_cv)
-                               for parameters, (train, test)
-                               in product(candidate_params, oob.split(X_train_outer, y_train_outer)))
-
-                all_candidate_params.extend(candidate_params)
-                all_out.extend(out)
-
-                cv_results = self._format_results(all_candidate_params, self.scorers, n_splits, all_out)
-
-                # If callable, refit is expected to return the index of the best
-                # parameter set.
-                if callable(self.refit_inner):
-                    best_index = self.refit_inner(cv_results)
-                    if not isinstance(best_index, numbers.Integral):
-                        raise TypeError('best_index returned is not an integer')
-                    if best_index < 0 or best_index >= len(cv_results["params"]):
-                        raise IndexError('best_index_ index out of range')
-                else:
-                    best_index = cv_results["rank_test_%s" % self.refit_metric].argmin()
-                    best_score = cv_results["mean_test_%s" % self.refit_metric][best_index]
-                best_params = cv_results["params"][best_index]
-                best_estimator = clone(clone(base_estimator).set_params(**best_params))
-                best_estimator.fit(X_train_outer, y_train_outer, **fit_params)
-
-            self.inner_results.append({'params': cv_results['params'],
-                                       'mean_test_score': cv_results['mean_test_%s' % self.refit_metric],
-                                       'std_test_score': cv_results['std_test_%s' % self.refit_metric]})
+            self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
+                                       'mean_test_score': pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric],
+                                       'std_test_score': pipeline_inner.cv_results_['std_test_%s' % self.refit_metric]})
             if self.return_train_score:
-                self.inner_results[-1].update({'mean_train_score': cv_results['mean_train_%s' % self.refit_metric],
-                                               'std_train_score': cv_results['std_train_%s' % self.refit_metric]})
+                self.inner_results[-1].update({'mean_train_score': pipeline_inner.cv_results_['mean_train_%s' % self.refit_metric],
+                                               'std_train_score': pipeline_inner.cv_results_['std_train_%s' % self.refit_metric]})
             if self.verbose > 2:
-                for params_dic in cv_results['params']:
-                    mean_test_score = cv_results['mean_test_%s' % self.refit_metric]
-                    index_params_dic = cv_results['params'].index(params_dic)
+                for params_dic in pipeline_inner.cv_results_['params']:
+                    mean_test_score = pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric]
+                    index_params_dic = pipeline_inner.cv_results_['params'].index(params_dic)
                     print('\t\t Params: {0}, Mean inner score: {1}'.format(params_dic, mean_test_score[index_params_dic]))
-            self.outer_results['best_inner_score'].append(cv_results['mean_test_%s' % self.refit_metric][best_index])  # Because best_score doesn't exist if refit_inner is a callable
-            self.outer_results['best_inner_params'].append(best_params)
+            self.outer_results['best_inner_score'].append(pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric][pipeline_inner.best_index_])  # Because best_score doesn't exist if refit_inner is a callable
+            self.outer_results['best_inner_params'].append(pipeline_inner.best_params_)
             if self.return_train_score:
-                self.outer_results['outer_train_score'].append(self.scorers[self.refit_metric](best_estimator, X_train_outer, y_train_outer))
-            self.outer_results['outer_test_score'].append(self.scorers[self.refit_metric](best_estimator, X_test_outer, y_test_outer))
+                self.outer_results['outer_train_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_train_outer, y_train_outer))
+            self.outer_results['outer_test_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_test_outer, y_test_outer))
             if self.verbose > 1:
                 print('\nResults for outer fold:\nBest inner parameters was: {0}'.format(self.outer_results['best_inner_params'][-1]))
                 print('Outer score: {0}'.format(self.outer_results['outer_test_score'][-1]))
                 print('Inner score: {0}'.format(self.outer_results['best_inner_score'][-1]))
             self.outer_pred['train'].append(train_outer_index)
             self.outer_pred['test'].append(test_outer_index)
-            self.outer_pred['model'].append(best_estimator)
-            self.outer_pred['predict_train'].append(best_estimator.predict(X_train_outer))
-            self.outer_pred['predict_test'].append(best_estimator.predict(X_test_outer))
-            self.outer_pred['predict_proba_train'].append(best_estimator.predict_proba(X_train_outer))
-            self.outer_pred['predict_proba_test'].append(best_estimator.predict_proba(X_test_outer))
+            self.outer_pred['model'].append(pipeline_inner.best_estimator_)
+            self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
+            self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
+            self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
+            self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
         if self.verbose > 0:
             print('\nOverall outer score (mean +/- std): {0} +/- {1}'.format(np.mean(self.outer_results['outer_test_score']),
                                                                              np.std(self.outer_results['outer_test_score'])))
