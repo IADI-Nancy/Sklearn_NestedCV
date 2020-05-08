@@ -203,9 +203,7 @@ class Bootstrap_inner():
 
             final_test_scores = {_: weight[_] * test_scores[_] + (1. - weight[_]) * train_scores[_] for _ in self.scorers}
             score_time = time.time() - start_time - fit_time
-            nb_error = [np.sum(final_test_scores[_] < 0) + np.sum(final_test_scores[_] > 1) for _ in final_test_scores][0]
-            if nb_error != 0:
-                print(nb_error)
+            
             if self.verbose > 2:
                 for scorer_name in sorted(test_scores):
                     msg += ", %s=" % scorer_name
