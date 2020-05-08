@@ -16,6 +16,7 @@ from sklearn.utils.validation import indexable, _check_fit_params
 from sklearn.metrics._scorer import _check_multimetric_scoring
 from sklearn.utils.metaestimators import _safe_split
 from sklearn.utils import resample
+from sklearn.metrics._scorer import _ProbaScorer, _ThresholdScorer
 
 
 class Bootstrap_inner():
@@ -188,11 +189,13 @@ class Bootstrap_inner():
             if method == '.632+':
                 weight = {}
                 for scorer_name in self.scorers:
-                    # gamma = self.no_information_rate(X, y, cloned_est, self.scorers[scorer_name])
+                    score_sign = self.scorers[scorer_name]._sign
+                    # gamma = self.no_information_rate(X, y, estimator, self.scorers[scorer_name])
                     gamma = self.no_information_rate(y, estimator.predict(X))  # Only work for classifier
                     # Original calculation in mlxtend which got an error in denominator
-                    # R = (-(test_acc[scorer_name] - train_acc[scorer_name])) / (gamma - (1 - test_acc[scorer_name]))
-                    R = (test_scores[scorer_name] - train_scores[scorer_name]) / (gamma - train_scores[scorer_name])
+                    # R = (-(test_scores[scorer_name] - train_scores[scorer_name])) / (gamma - (1 - test_scores[scorer_name]))
+                    R = (-score_sign * (test_scores[scorer_name] - train_scores[scorer_name])) / \
+                        (gamma - (-score_sign * train_scores[scorer_name]))
                     weight[scorer_name] = 0.632 / (1 - 0.368 * R)
 
             else:
@@ -200,7 +203,9 @@ class Bootstrap_inner():
 
             final_test_scores = {_: weight[_] * test_scores[_] + (1. - weight[_]) * train_scores[_] for _ in self.scorers}
             score_time = time.time() - start_time - fit_time
-
+            nb_error = [np.sum(final_test_scores[_] < 0) + np.sum(final_test_scores[_] > 1) for _ in final_test_scores][0]
+            if nb_error != 0:
+                print(nb_error)
             if self.verbose > 2:
                 for scorer_name in sorted(test_scores):
                     msg += ", %s=" % scorer_name
