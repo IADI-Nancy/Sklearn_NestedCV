@@ -22,7 +22,7 @@ from sklearn.base import BaseEstimator
 from sklearn.metrics._scorer import _PredictScorer, _ProbaScorer, _ThresholdScorer
 from scipy.stats import rankdata
 from natsort import natsorted
-from joblib import dump, load
+from joblib import dump, load, Memory
 
 class NestedCV(BaseEstimator):
     """
@@ -367,9 +367,13 @@ class NestedCV(BaseEstimator):
                 print('\n-----------------\n{0}/{1} <-- Current outer fold'.format(k_outer + 1, outer_cv.get_n_splits()))
             X_train_outer, X_test_outer = self.X[train_outer_index], self.X[test_outer_index]
             y_train_outer, y_test_outer = self.y[train_outer_index], self.y[test_outer_index]
+            location = 'cachedir'
+            memory = Memory(location=location, verbose=0)
+            inner_model = clone(self.model)
+            inner_model.set_params(memory=memory)
             if self.get_pred:
                 self.temp_dir = tempfile.mkdtemp()
-            pipeline_inner = GridSearchCV(self.model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
+            pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
                                           return_train_score=self.return_train_score, verbose=self.verbose - 1,
                                           pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
             pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
@@ -489,6 +493,8 @@ class NestedCV(BaseEstimator):
                         self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
                         self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
                         self.outer_pred['decision_function_train'].append(pipeline_inner.best_estimator_.decision_function(X_train_outer))
+            memory.clear(warn=False)
+            shutil.rmtree(location)
         # TODO : if LOOCV group preds from outer loops to calculate outer_train and outer_test score as in inner loop
         #  but quid of different hyperparameters selected in each fold ? Ignore it ? Do it in post process?
         if self.verbose > 0:
@@ -505,10 +511,16 @@ class NestedCV(BaseEstimator):
         # If refit is True Hyperparameter optimization on whole dataset and fit with best params
         if self.refit_outer:
             print('=== Refit ===')
+            location = 'cachedir'
+            memory = Memory(location=location, verbose=0)
+            final_model = clone(self.model)
+            final_model.set_params(memory=memory)
             pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=self.scorers[self.refit_metric], n_jobs=self.n_jobs,
                                           cv=outer_cv, verbose=self.verbose - 1)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
             self.best_estimator_ = pipeline_refit.best_estimator_
+            memory.clear(warn=False)
+            shutil.rmtree(location)
 
     def score(self, X, y=None):
         """Returns the score on the given data, if the estimator has been refit.
