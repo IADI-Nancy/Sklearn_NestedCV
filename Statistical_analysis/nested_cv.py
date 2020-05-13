@@ -15,6 +15,8 @@ from sklearn.metrics._scorer import _check_multimetric_scoring
 from sklearn.utils.validation import check_is_fitted
 from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator, clone
+from joblib import Memory
+from shutil import rmtree
 
 
 class NestedCV(BaseEstimator):
@@ -330,13 +332,17 @@ class NestedCV(BaseEstimator):
                 print('\n-----------------\n{0}/{1} <-- Current outer fold'.format(k_outer + 1, outer_cv.get_n_splits()))
             X_train_outer, X_test_outer = X[train_outer_index], X[test_outer_index]
             y_train_outer, y_test_outer = y[train_outer_index], y[test_outer_index]
+            location = 'cachedir'
+            memory = Memory(location=location, verbose=0)
+            inner_model = clone(self.model)
+            inner_model.set_params(memory=memory)
             if not isinstance(inner_cv, str):
-                pipeline_inner = GridSearchCV(self.model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
+                pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
                                               return_train_score=self.return_train_score, verbose=self.verbose - 1,
                                               pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
                 pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
             else:
-                pipeline_inner = Bootstrap_inner(self.model, self.params_grid, scorers=self.scorers, n_jobs=self.n_jobs,
+                pipeline_inner = Bootstrap_inner(inner_model, self.params_grid, scorers=self.scorers, n_jobs=self.n_jobs,
                                                  method=self.inner_cv, return_train_score=self.return_train_score,
                                                  verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
                                                  refit=self.refit_inner, random_state=self.random_state,
@@ -370,6 +376,8 @@ class NestedCV(BaseEstimator):
             self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
             self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
             self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
+            memory.clear(warn=False)
+            rmtree(location)
         if self.verbose > 0:
             print('\nOverall outer score (mean +/- std): {0} +/- {1}'.format(np.mean(self.outer_results['outer_test_score']),
                                                                              np.std(self.outer_results['outer_test_score'])))
@@ -384,10 +392,16 @@ class NestedCV(BaseEstimator):
         # If refit is True Hyperparameter optimization on whole dataset and fit with best params
         if self.refit_outer:
             print('=== Refit ===')
+            location = 'cachedir'
+            memory = Memory(location=location, verbose=0)
+            final_model = clone(self.model)
+            final_model.set_params(memory=memory)
             pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=self.scorers[self.refit_metric], n_jobs=self.n_jobs,
                                           cv=outer_cv, verbose=self.verbose - 1)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
             self.best_estimator_ = pipeline_refit.best_estimator_
+            memory.clear(warn=False)
+            rmtree(location)
 
     def score(self, X, y=None):
         """Returns the score on the given data, if the estimator has been refit.
