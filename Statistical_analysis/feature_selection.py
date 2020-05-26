@@ -171,8 +171,8 @@ class FeatureSelection(BaseEstimator):
         for i in range(n_features):
             ranks = rankdata(X[:, i])
             class_dic = {}
-            for i in labels:
-                class_dic[i] = {'n': y[y == i].size, 'rank': ranks[y == i]}
+            for j in labels:
+                class_dic[j] = {'n': y[y == j].size, 'rank': ranks[y == j]}
             numerator = np.sum([class_dic[_]['n'] * (class_dic[_]['rank'].mean() - ranks.mean()) ** 2 for _ in labels])
             denominator = np.sum([np.sum((class_dic[_]['rank'] - ranks.mean()) ** 2) for _ in labels])
             J = (y.size - 1) * numerator / denominator
