@@ -146,8 +146,8 @@ class FeatureSelection(BaseEstimator):
     # === Scoring method ===
     @staticmethod
     def mw_pvalue(X, y):
-        score = np.array([])
         n_samples, n_features = X.shape
+        score = np.zeros(n_features)
         labels = np.unique(y)
         for i in range(n_features):
             if len(labels) == 2:
@@ -155,7 +155,7 @@ class FeatureSelection(BaseEstimator):
             else:
                 X_by_label = [X[:, i][y == i] for _ in labels]
                 statistic, pvalue = kruskal(*X_by_label)
-            score = np.append(score, pvalue)
+            score[i] = pvalue
         return score
 
 
@@ -165,8 +165,8 @@ class FeatureSelection(BaseEstimator):
         Machine Learning methods for Quantitative Radiomic Biomarkers.
         Parmar et al. Scientific Reports 2015
         """
-        score = np.array([])
         n_samples, n_features = X.shape
+        score = np.zeros(n_features)
         labels = np.unique(y)
         for i in range(n_features):
             ranks = rankdata(X[:, i])
@@ -176,13 +176,13 @@ class FeatureSelection(BaseEstimator):
             numerator = np.sum([class_dic[_]['n'] * (class_dic[_]['rank'].mean() - ranks.mean()) ** 2 for _ in labels])
             denominator = np.sum([np.sum((class_dic[_]['rank'] - ranks.mean()) ** 2) for _ in labels])
             J = (y.size - 1) * numerator / denominator
-            score = np.append(score, J)
+            score[i] = J
         return score
 
     @staticmethod
     def auc_roc(X, y):
-        score = np.array([])
         n_samples, n_features = X.shape
+        score = np.zeros(n_features)
         labels = np.unique(y)
         if len(labels) == 2:
             for i in range(n_features):
@@ -195,7 +195,7 @@ class FeatureSelection(BaseEstimator):
                     positive_label = 0
                 fpr, tpr, thresholds = roc_curve(y, X[:, i], pos_label=positive_label)
                 roc_auc = auc(fpr, tpr)
-                score = np.append(score, roc_auc)
+                score[i] = roc_auc
         else:
             # Adapted from roc_auc_score for multi_class labels
             # See sklearn.metrics._base_average_multiclass_ovo_score
@@ -219,25 +219,25 @@ class FeatureSelection(BaseEstimator):
                     fpr, tpr, _ = roc_curve(positive_class, X[:, i][ab_mask])
                     roc_auc = auc(fpr, tpr)
                     pair_scores[ix] = roc_auc
-                score = np.append(score, np.average(pair_scores))
+                score[i] = np.average(pair_scores)
         return score
 
     @staticmethod
     def pearson_corr(X, y):
-        score = np.array([])
         n_samples, n_features = X.shape
+        score = np.zeros(n_features)
         for i in range(n_features):
             correlation, pvalue = pearsonr(X[:, i], y)
-            score = np.append(score, correlation)
+            score[i] = correlation
         return score
 
     @staticmethod
     def spearman_corr(X, y):
-        score = np.array([])
         n_samples, n_features = X.shape
+        score = np.zeros(n_features)
         for i in range(n_features):
             correlation, pvalue = spearmanr(X[:, i], y)
-            score = np.append(score, correlation)
+            score[i] = correlation
         return score
 
     @staticmethod
