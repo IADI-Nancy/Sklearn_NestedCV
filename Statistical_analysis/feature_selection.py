@@ -47,8 +47,8 @@ class FeatureSelection(BaseEstimator):
             Choose whether lower score correspond to higher rank for the rank calculation or higher score is better,
             `True` means lower score is better. Determined automatically for inbuild functions
         """
-    scoring_methods = {'name': ['mw_pvalue', 'auc_roc', 'pearson_corr', 'spearman_corr', 'mi', 'wlcx_score'],
-                       'score_indicator_lower': [True, False, False, False, False, False]}
+    scoring_methods = {'name': ['auc_roc', 'pearson_corr', 'spearman_corr', 'mi', 'wlcx_score'],
+                       'score_indicator_lower': [False, False, False, False, False]}
     ranking_methods = ['mrmr']
     # TODO: implement more inbuild functions like multivariate selection algorithm
     #  (see skfeature : https://github.com/jundongl/scikit-feature)
@@ -154,7 +154,7 @@ class FeatureSelection(BaseEstimator):
             statistic, pvalue = kruskal(*X_by_label)
             score[i] = statistic
         return score
-    
+
     @staticmethod
     def auc_roc(X, y):
         n_samples, n_features = X.shape
