@@ -145,40 +145,16 @@ class FeatureSelection(BaseEstimator):
 
     # === Scoring method ===
     @staticmethod
-    def mw_pvalue(X, y):
-        n_samples, n_features = X.shape
-        score = np.zeros(n_features)
-        labels = np.unique(y)
-        for i in range(n_features):
-            if len(labels) == 2:
-                statistic, pvalue = mannwhitneyu(X[:, i][y == labels[0]], X[:, i][y == labels[1]], alternative='two-sided')
-            else:
-                X_by_label = [X[:, i][y == i] for _ in labels]
-                statistic, pvalue = kruskal(*X_by_label)
-            score[i] = pvalue
-        return score
-
-
-    @staticmethod
     def wlcx_score(X, y):
-        """
-        Machine Learning methods for Quantitative Radiomic Biomarkers.
-        Parmar et al. Scientific Reports 2015
-        """
         n_samples, n_features = X.shape
         score = np.zeros(n_features)
         labels = np.unique(y)
         for i in range(n_features):
-            ranks = rankdata(X[:, i])
-            class_dic = {}
-            for j in labels:
-                class_dic[j] = {'n': y[y == j].size, 'rank': ranks[y == j]}
-            numerator = np.sum([class_dic[_]['n'] * (class_dic[_]['rank'].mean() - ranks.mean()) ** 2 for _ in labels])
-            denominator = np.sum([np.sum((class_dic[_]['rank'] - ranks.mean()) ** 2) for _ in labels])
-            J = (y.size - 1) * numerator / denominator
-            score[i] = J
+            X_by_label = [X[:, i][y == _] for _ in labels]
+            statistic, pvalue = kruskal(*X_by_label)
+            score[i] = statistic
         return score
-
+    
     @staticmethod
     def auc_roc(X, y):
         n_samples, n_features = X.shape
