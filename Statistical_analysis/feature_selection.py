@@ -19,8 +19,7 @@ class FeatureSelection(BaseEstimator):
         method: str or callable
             Method used to score/rank features. Either str or callable
             If str inbuild function named as str is called, must be one of following:
-                'mw_pvalue': scoring with p-value resulting of Mann-Whitney/Kruskall-Wallis test
-                'wlcx_score': scoring with Wilcoxon score as in Parmar et al. Scientific Reports 2015
+                'wlcx_score': score of kruskall wallis test
                 'auc_roc': scoring with area under the roc curve
                 'pearson_corr': scoring with pearson correlation coefficient between features and labels
                 'spearman_corr': scoring with spearman correlation coefficient between features and labels
@@ -52,6 +51,7 @@ class FeatureSelection(BaseEstimator):
     ranking_methods = ['mrmr']
     # TODO: implement more inbuild functions like multivariate selection algorithm
     #  (see skfeature : https://github.com/jundongl/scikit-feature)
+    # TODO : implement t-test, chisquare
     ranking_aggregation_methods = ['enhanced_borda', 'borda', 'importance_score', 'mean', 'stability_selection',
                                    'exponential_weighting']
     # Importance score method :
