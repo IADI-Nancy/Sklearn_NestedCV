@@ -10,7 +10,7 @@ from Statistical_analysis.feature_selection import FeatureSelection
 from Statistical_analysis.bootstrap_inner import Bootstrap_inner
 from sklearn.model_selection._split import check_cv
 from sklearn.base import is_classifier
-from sklearn.model_selection import GridSearchCV, ParameterGrid
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.metrics._scorer import _check_multimetric_scoring
 from sklearn.utils.validation import check_is_fitted
 from sklearn.exceptions import NotFittedError
@@ -126,12 +126,17 @@ class NestedCV(BaseEstimator):
         the overfitting/underfitting trade-off. However computing the scores on the training set can be
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
+    randomized_search: boolean (default=False)
+        Wether to use gridsearch or randomized search for hyperparameters optimization in inner loop
+    randomized_search_iter: int (default=10)
+        Number of parameter settings that are sampled. n_iter trades off runtime vs quality of the solution.
     n_bsamples: int (default=200)
         Number of bootstrap sample to use in inner loop if method chosen is a bootstrap one (oob, 0.632, 0632+)
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options={}, metric='roc_auc', verbose=1, refit_outer=True,
-                 refit_inner=True, return_train_score=False, random_state=None, n_bsamples=200):
+                 refit_inner=True, return_train_score=False, random_state=None, randomized_search=False,
+                 randomized_search_iter=10, n_bsamples=200):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
@@ -146,6 +151,8 @@ class NestedCV(BaseEstimator):
         self.refit_inner = refit_inner
         self.return_train_score = return_train_score
         self.random_state = random_state
+        self.randomized_search = randomized_search
+        self.randomized_search_iter = randomized_search_iter
         self.n_bsamples = n_bsamples
 
     @staticmethod
@@ -283,9 +290,15 @@ class NestedCV(BaseEstimator):
             if self.inner_cv not in allowed_methods:
                 raise ValueError('The `method` must  be in %s. Got %s.' % (allowed_methods, self.inner_cv))
             else:
+                if self.inner_cv == '.632+':
+                    warnings.warn('Actually bootstrap works only for classification problem due to way the no '
+                                  'information rate is calculated')
                 inner_cv = self.inner_cv
         else:
             inner_cv = check_cv(self.inner_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
+        
+        if not isinstance(self.randomized_search, bool):
+            raise TypeError('randomized_search argument must be a boolean')
 
         self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': [],
                              'predict_proba_train': [], 'predict_proba_test': []}
@@ -337,9 +350,16 @@ class NestedCV(BaseEstimator):
             inner_model = clone(self.model)
             inner_model.set_params(memory=memory)
             if not isinstance(inner_cv, str):
-                pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
-                                              return_train_score=self.return_train_score, verbose=self.verbose - 1,
-                                              pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
+                if self.randomized_search:
+                    pipeline_inner = RandomizedSearchCV(inner_model, self.params_grid, scoring=self.scorers,
+                                                        n_jobs=self.n_jobs, cv=inner_cv, n_iter=self.randomized_search_iter,
+                                                        return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                                        pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
+                                                        random_state=self.random_state)
+                else:
+                    pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
+                                                  return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                                  pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
                 pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
             else:
                 pipeline_inner = Bootstrap_inner(inner_model, self.params_grid, scorers=self.scorers, n_jobs=self.n_jobs,
@@ -396,7 +416,7 @@ class NestedCV(BaseEstimator):
             memory = Memory(location=location, verbose=0)
             final_model = clone(self.model)
             final_model.set_params(memory=memory)
-            pipeline_refit = GridSearchCV(self.model, self.params_grid, scoring=self.scorers[self.refit_metric], n_jobs=self.n_jobs,
+            pipeline_refit = GridSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric], n_jobs=self.n_jobs,
                                           cv=outer_cv, verbose=self.verbose - 1)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
             self.best_estimator_ = pipeline_refit.best_estimator_
