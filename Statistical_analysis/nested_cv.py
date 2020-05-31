@@ -14,7 +14,7 @@ from Statistical_analysis.dimensionality_reduction import DimensionalityReductio
 from Statistical_analysis.feature_selection import FeatureSelection
 from sklearn.model_selection._split import check_cv, _RepeatedSplits
 from sklearn.base import is_classifier
-from sklearn.model_selection import GridSearchCV, ParameterGrid
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.metrics._scorer import check_scoring, _check_multimetric_scoring, make_scorer
 from sklearn.utils.validation import check_is_fitted
 from sklearn.exceptions import NotFittedError
@@ -143,10 +143,15 @@ class NestedCV(BaseEstimator):
         - LOOCV : For each fold the prediction instead of the score will be predicted. Then all the prediction will
         be concatenated to calculate a unique score on all folds (if Repeated cross validation, the process will be
         repeated at each repetition)
+    randomized_search: boolean (default=False)
+        Wether to use gridsearch or randomized search for hyperparameters optimization in inner loop
+    randomized_search_iter: int (default=10)
+        Number of parameter settings that are sampled. n_iter trades off runtime vs quality of the solution.
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options={}, metric='roc_auc', verbose=1, refit_outer=True,
-                 refit_inner=True, return_train_score=False, random_state=None, get_pred=True, cv_type='normal'):
+                 refit_inner=True, return_train_score=False, random_state=None, get_pred=True, cv_type='normal', 
+                 randomized_search=False, randomized_search_iter=10):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
@@ -163,6 +168,8 @@ class NestedCV(BaseEstimator):
         self.random_state = random_state
         self.get_pred = get_pred
         self.cv_type = cv_type
+        self.randomized_search = randomized_search
+        self.randomized_search_iter = randomized_search_iter
 
     @staticmethod
     def _string_processing(key):
@@ -316,6 +323,9 @@ class NestedCV(BaseEstimator):
 
         if self.cv_type == 'LOOCV' and not self.get_pred:
             raise ValueError('If cv_type is LOOCV then get_pred must be True to access to prediction of each model')
+            
+        if not isinstance(self.randomized_search, bool):
+            raise TypeError('randomized_search argument must be a boolean')
 
         # From sklearn.model_selection._search.BasesearchCV
         self.scorers, self.multimetric_ = _check_multimetric_scoring(self.model, scoring=self.metric)
@@ -373,9 +383,16 @@ class NestedCV(BaseEstimator):
             inner_model.set_params(memory=memory)
             if self.get_pred:
                 self.temp_dir = tempfile.mkdtemp()
-            pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
-                                          return_train_score=self.return_train_score, verbose=self.verbose - 1,
-                                          pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
+            if self.randomized_search:
+                pipeline_inner = RandomizedSearchCV(inner_model, self.params_grid, scoring=self.scorers,
+                                                    n_jobs=self.n_jobs, cv=inner_cv, n_iter=self.randomized_search_iter,
+                                                    return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                                    pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
+                                                    random_state=self.random_state)
+            else:
+                pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
+                                              return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                              pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
             pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
             if self.get_pred:
                 inner_cv_pred = {}
