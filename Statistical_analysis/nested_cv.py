@@ -9,7 +9,7 @@ from Statistical_analysis.dimensionality_reduction import DimensionalityReductio
 from Statistical_analysis.feature_selection import FeatureSelection
 from sklearn.model_selection._split import check_cv
 from sklearn.base import is_classifier
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.metrics._scorer import check_scoring, _check_multimetric_scoring
 from sklearn.utils.validation import check_is_fitted
 from sklearn.exceptions import NotFittedError
@@ -124,10 +124,15 @@ class NestedCV(BaseEstimator):
         the overfitting/underfitting trade-off. However computing the scores on the training set can be
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
+    randomized_search: boolean (default=False)
+        Wether to use gridsearch or randomized search for hyperparameters optimization in inner loop
+    randomized_search_iter: int (default=10)
+        Number of parameter settings that are sampled. n_iter trades off runtime vs quality of the solution.
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options={}, metric='roc_auc', verbose=1, refit_outer=True,
-                 refit_inner=True, return_train_score=False, random_state=None):
+                 refit_inner=True, return_train_score=False, random_state=None, randomized_search=False,
+                 randomized_search_iter=10):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
@@ -142,6 +147,8 @@ class NestedCV(BaseEstimator):
         self.refit_inner = refit_inner
         self.return_train_score = return_train_score
         self.random_state = random_state
+        self.randomized_search = randomized_search
+        self.randomized_search_iter = randomized_search_iter
 
     @staticmethod
     def _string_processing(key):
@@ -273,6 +280,9 @@ class NestedCV(BaseEstimator):
 
         outer_cv = check_cv(self.outer_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
         inner_cv = check_cv(self.inner_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
+        
+        if not isinstance(self.randomized_search, bool):
+            raise TypeError('randomized_search argument must be a boolean')
 
         self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': [],
                              'predict_proba_train': [], 'predict_proba_test': []}
@@ -323,9 +333,16 @@ class NestedCV(BaseEstimator):
             memory = Memory(location=location, verbose=0)
             inner_model = clone(self.model)
             inner_model.set_params(memory=memory)
-            pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=scorers, n_jobs=self.n_jobs, cv=inner_cv,
-                                          return_train_score=self.return_train_score, verbose=self.verbose - 1,
-                                          pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
+            if self.randomized_search:
+                pipeline_inner = RandomizedSearchCV(inner_model, self.params_grid, scoring=self.scorers,
+                                                    n_jobs=self.n_jobs, cv=inner_cv, n_iter=self.randomized_search_iter,
+                                                    return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                                    pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
+                                                    random_state=self.random_state)
+            else:
+                pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
+                                              return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                              pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
             pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
             self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
                                        'mean_test_score': pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric],
