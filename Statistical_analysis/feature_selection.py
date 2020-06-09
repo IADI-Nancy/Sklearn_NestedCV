@@ -299,7 +299,7 @@ class FeatureSelection(BaseEstimator):
         if self.bootstrap:
             if self.ranking_aggregation is None:
                 raise ValueError('ranking_aggregation option must be given if bootstrap is True')
-            bsamples_index = np.array([resample(range(n_samples), random_state=_) for _ in range(self.n_bsamples)])
+            bsamples_index = np.array([resample(range(n_samples), random_state=_, stratify=y) for _ in range(self.n_bsamples)])
             if self.ranking_done:
                 bootstrap_ranks = np.array([self.fs_func(X[_, :], y[_]) for _ in bsamples_index])
             else:
