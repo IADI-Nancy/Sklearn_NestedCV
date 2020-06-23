@@ -362,11 +362,14 @@ class NestedCV(BaseEstimator):
 
         if self.get_pred:
             self.scorers.update({'inner_pred': self.make_inner_scorer})
-            self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_test': [], 'predict_proba_test': [],
-                               'decision_function_test': []}
-            if self.return_train_score:
-                self.outer_pred.update({'predict_train': [], 'predict_proba_train': [], 'decision_function_train': []})
             self.inner_pred = []
+            
+        self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': []}
+        if hasattr(self.model[-1], 'predict_proba'):
+            self.outer_pred.update({'predict_proba_train': [], 'predict_proba_test': []})
+        if hasattr(self.model[-1], 'decision_function'):
+            self.outer_pred.update({'decision_function_train': [], 'decision_function_test': []})
+
         self.outer_results = {'outer_test_score': [], 'best_inner_score': [], 'best_inner_params': []}
         if self.return_train_score:
             self.outer_results.update({'outer_train_score': []})
