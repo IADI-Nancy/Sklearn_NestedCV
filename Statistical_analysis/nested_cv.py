@@ -369,8 +369,12 @@ class NestedCV(BaseEstimator):
             self.outer_pred['model'].append(pipeline_inner.best_estimator_)
             self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
             self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
-            self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
-            self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
+            if hasattr(pipeline_inner.best_estimator_[-1], 'predict_proba'):
+                self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
+                self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
+            if hasattr(pipeline_inner.best_estimator_[-1], 'decision_function'):
+                self.outer_pred['decision_function_train'].append(pipeline_inner.best_estimator_.decision_function(X_train_outer))
+                self.outer_pred['decision_function_test'].append(pipeline_inner.best_estimator_.decision_function(X_test_outer))
             memory.clear(warn=False)
             rmtree(location)
         if self.verbose > 0:
