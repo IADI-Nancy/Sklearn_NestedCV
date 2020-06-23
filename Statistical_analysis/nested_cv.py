@@ -300,8 +300,12 @@ class NestedCV(BaseEstimator):
         if not isinstance(self.randomized_search, bool):
             raise TypeError('randomized_search argument must be a boolean')
 
-        self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': [],
-                             'predict_proba_train': [], 'predict_proba_test': []}
+        self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': []}
+        if hasattr(self.model[-1], 'predict_proba'):
+            self.outer_pred.update({'predict_proba_train': [], 'predict_proba_test': []})
+        if hasattr(self.model[-1], 'decision_function'):
+            self.outer_pred.update({'decision_function_train': [], 'decision_function_test': []})
+            
         self.outer_results = {'outer_test_score': [], 'best_inner_score': [], 'best_inner_params': []}
         self.inner_results = []
         if self.return_train_score:
