@@ -499,17 +499,17 @@ class NestedCV(BaseEstimator):
                 print('\nResults for outer fold:\nBest inner parameters was: {0}'.format(self.outer_results['best_inner_params'][-1]))
                 print('Outer score: {0}'.format(self.outer_results['outer_test_score'][-1]))
                 print('Inner score: {0}'.format(self.outer_results['best_inner_score'][-1]))
-            if self.get_pred:
-                    self.outer_pred['train'].append(train_outer_index)
-                    self.outer_pred['test'].append(test_outer_index)
-                    self.outer_pred['model'].append(pipeline_inner.best_estimator_)
-                    self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
-                    self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
-                    self.outer_pred['decision_function_test'].append(pipeline_inner.best_estimator_.decision_function(X_test_outer))
-                    if self.return_train_score:
-                        self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
-                        self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
-                        self.outer_pred['decision_function_train'].append(pipeline_inner.best_estimator_.decision_function(X_train_outer))
+            self.outer_pred['train'].append(train_outer_index)
+            self.outer_pred['test'].append(test_outer_index)
+            self.outer_pred['model'].append(pipeline_inner.best_estimator_)
+            self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
+            self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
+            if hasattr(pipeline_inner.best_estimator_[-1], 'predict_proba'):
+                self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
+                self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
+            if hasattr(pipeline_inner.best_estimator_[-1], 'decision_function'):
+                self.outer_pred['decision_function_train'].append(pipeline_inner.best_estimator_.decision_function(X_train_outer))
+                self.outer_pred['decision_function_test'].append(pipeline_inner.best_estimator_.decision_function(X_test_outer))
             memory.clear(warn=False)
             shutil.rmtree(location)
         # TODO : if LOOCV group preds from outer loops to calculate outer_train and outer_test score as in inner loop
