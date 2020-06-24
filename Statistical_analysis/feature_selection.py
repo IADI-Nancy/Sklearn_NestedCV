@@ -304,7 +304,7 @@ class FeatureSelection(BaseEstimator):
             n = 0
             while len(bsamples_index) < self.n_bsamples:
                 bootstrap_sample = resample(range(n_samples), random_state=n)
-                if len(np.unique(y[bootstrap_sample])) != n_classes:
+                if len(np.unique(y[bootstrap_sample])) == n_classes:
                     bsamples_index.append(bootstrap_sample)
                 n += 1
             bsamples_index = np.array(bsamples_index)
