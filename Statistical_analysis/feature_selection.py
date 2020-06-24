@@ -292,6 +292,7 @@ class FeatureSelection(BaseEstimator):
         """
         X, y = self._check_X_Y(X, y)
         n_samples, n_features = X.shape
+        n_classes = len(np.unique(y))
         self.fs_func = self._get_fs_func()
         if self.ranking_aggregation is not None:
             aggregation_method = self._get_aggregation_method()
@@ -299,7 +300,14 @@ class FeatureSelection(BaseEstimator):
         if self.bootstrap:
             if self.ranking_aggregation is None:
                 raise ValueError('ranking_aggregation option must be given if bootstrap is True')
-            bsamples_index = np.array([resample(range(n_samples), random_state=_, stratify=y) for _ in range(self.n_bsamples)])
+            bsamples_index = []
+            n = 0
+            while len(bsamples_index) < self.n_bsamples:
+                bootstrap_sample = resample(range(n_samples), random_state=n)
+                if len(np.unique(y[bootstrap_sample])) != n_classes:
+                    bsamples_index.append(bootstrap_sample)
+                n += 1
+            bsamples_index = np.array(bsamples_index)
             if self.ranking_done:
                 bootstrap_ranks = np.array([self.fs_func(X[_, :], y[_]) for _ in bsamples_index])
             else:
