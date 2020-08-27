@@ -218,7 +218,7 @@ class FeatureSelection(BaseEstimator):
 
     @staticmethod
     def mi(X, y):
-        score = mutual_info_classif(X, y)
+        score = mutual_info_classif(X, y, random_state=111)
         return score
 
     @staticmethod
