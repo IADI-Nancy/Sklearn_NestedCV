@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import sys
 from rpy2.robjects import r, pandas2ri, numpy2ri
-from Statistical_analysis.univariate_statistical_analysis import univariate_analysis
+from Sklearn_NestedCV.master.Statistical_analysis.univariate_statistical_analysis import univariate_analysis
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.exceptions import NotFittedError
 from sklearn.cluster import FeatureAgglomeration
