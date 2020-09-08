@@ -53,9 +53,11 @@ def ComBat(X, batch, covariate=None, parametric=False, empirical_bayes=True, sav
     if len(np.unique(batch)) <= 1:
         raise ValueError('batch array must have at least 2 classes')
     r_batch = Vector(batch)
-    cwd = os.path.dirname(sys.argv[0])
+    # cwd = os.path.dirname(sys.argv[0])
+    cwd = os.path.abspath(__file__)
     r.setwd(cwd)
-    r.source('./Statistical_analysis/R_scripts/ComBat.R')
+    # r.source('./Statistical_analysis/R_scripts/ComBat.R')
+    r.source('./R_scripts/ComBat.R')
     r_dr_results = r.ComBat_harmonization(r_df, r_covariate, r_batch, parametric, empirical_bayes)
     R_object_dict = {}
     keys = r_dr_results.names
@@ -127,9 +129,11 @@ def MComBat(X, batch, ref_batch=None, covariate=None, num_covs=None, save_dir=No
         if not isinstance(num_covs, (list, tuple, np.ndarray)):
             raise TypeError('num_covs must be an int or array like of int equal to the index of numerical covariates')
         r_numCovs = Vector(num_covs)
-    cwd = os.path.dirname(sys.argv[0])
+    # cwd = os.path.dirname(sys.argv[0])
+    cwd = os.path.abspath(__file__)
     r.setwd(cwd)
-    r.source('./Statistical_analysis/R_scripts/MComBat.R')
+    # r.source('./Statistical_analysis/R_scripts/MComBat.R')
+    r.source('./R_scripts/MComBat.R')
     r_dr_results = r.MComBat_harmonization(r_df, r_covariate, r_batch, ref_batch, r_numCovs)
     R_object_dict = {}
     keys = r_dr_results.names
