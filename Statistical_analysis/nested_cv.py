@@ -5,9 +5,9 @@ import pandas as pd
 from collections.abc import Mapping
 from sklearn.pipeline import Pipeline as skPipeline
 from imblearn.pipeline import Pipeline as imbPipeline
-from Statistical_analysis.dimensionality_reduction import DimensionalityReduction
-from Statistical_analysis.feature_selection import FeatureSelection
-from Statistical_analysis.bootstrap_inner import Bootstrap_inner
+from .dimensionality_reduction import DimensionalityReduction
+from .feature_selection import FeatureSelection
+from .bootstrap_inner import Bootstrap_inner
 from sklearn.model_selection._split import check_cv
 from sklearn.base import is_classifier
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
