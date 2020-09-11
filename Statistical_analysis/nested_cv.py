@@ -10,8 +10,8 @@ import ast
 from collections.abc import Mapping
 from sklearn.pipeline import Pipeline as skPipeline
 from imblearn.pipeline import Pipeline as imbPipeline
-from Statistical_analysis.dimensionality_reduction import DimensionalityReduction
-from Statistical_analysis.feature_selection import FeatureSelection
+from .dimensionality_reduction import DimensionalityReduction
+from .feature_selection import FeatureSelection
 from sklearn.model_selection._split import check_cv, _RepeatedSplits
 from sklearn.base import is_classifier
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
