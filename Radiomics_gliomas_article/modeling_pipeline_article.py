@@ -1,8 +1,8 @@
 import os
 import pandas as pd
 import numpy as np
-from Sklearn_NestedCV.Statistical_analysis.nested_cv import NestedCV
-from Sklearn_NestedCV.Statistical_analysis.data_harmonization import *
+from Sklearn_NestedCV.master.Statistical_analysis.nested_cv import NestedCV
+from Sklearn_NestedCV.master.Statistical_analysis.data_harmonization import *
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
@@ -16,15 +16,20 @@ from sklearn.svm import SVC
 from itertools import combinations
 from sklearn.utils.fixes import loguniform
 from scipy.stats import randint
+from joblib import dump
 
 
 def save_results(save_dir, clf, X, y, score):
     outer_results = clf.outer_results
     outer_results.update({'outer_test_accuracy': [], 'outer_test_sensitivity': [], 'outer_test_specificity': []})
+    model_pickle_dir = os.path.join(save_dir, 'Pickled_model')
+    os.makedirs(model_pickle_dir, exist_ok=True)
     if not 'auc' in score:
         outer_results.update({'outer_test_auc': []})
     for i, model in enumerate(clf.outer_pred['model']):
-        y_true, y_pred = y.to_numpy()[clf.outer_pred['test'][i]], model.predict(X.to_numpy()[clf.outer_pred['test'][i]])
+        train_index = clf.outer_pred['train'][i]
+        test_index = clf.outer_pred['test'][i]
+        y_true, y_pred = y.to_numpy()[test_index], model.predict(X.to_numpy()[test_index])
         outer_results['outer_test_accuracy'].append(accuracy_score(y_true, y_pred))
         if len(np.unique(y)) == 2:
             sensitivity = imblearn.metrics.sensitivity_score(y_true, y_pred, average='binary', pos_label=1)
@@ -44,6 +49,10 @@ def save_results(save_dir, clf, X, y, score):
             else:
                 y_score = model.predict_proba(X.to_numpy()[clf.outer_pred['test'][i]])
                 outer_results['outer_test_auc'].append(roc_auc_score(y_true, y_score, average='macro', multi_class='ovo', labels=[1, 2, 3]))
+        fit_dic = {'Model': model, 'X_train': X.to_numpy()[train_index], 'y_train': y.to_numpy()[train_index],
+                   'X_test': X.to_numpy()[test_index], 'y_test': y.to_numpy()[test_index],
+                   'score': clf.outer_results['outer_test_score'][i]}
+        dump(fit_dic, os.path.join(model_pickle_dir, 'joblib_model_with_info_outer%s.pkl' % i))
     inner_results_reformated = {'inner_Fold': [], 'params': [], 'mean_test_score': [], 'std_test_score': [],
                                 'mean_train_score': [], 'std_train_score': []}
     for i, fold_results in enumerate(clf.inner_results):
