@@ -362,7 +362,6 @@ if __name__ == '__main__':
     covariates = None
     harmonization = 'MComBat'
     dataset_dic = {'OR': os.path.join(os.path.abspath(args.root), 'OR_tumor.xlsx'),
-                   'OR_brain': os.path.join(os.path.abspath(args.root), 'OR_brain.xlsx'),
                    'S': os.path.join(os.path.abspath(args.root), 'S.xlsx'),
                    'D': os.path.join(os.path.abspath(args.root), 'D.xlsx')}
     covariates_df = pd.read_excel(args.covariates_file, index_col=0)
