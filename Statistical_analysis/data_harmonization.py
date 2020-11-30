@@ -129,7 +129,7 @@ def MComBat(X, batch, ref_batch=None, covariate=None, num_covs=None, save_dir=No
         if not isinstance(num_covs, (list, tuple, np.ndarray)):
             raise TypeError('num_covs must be an int or array like of int equal to the index of numerical covariates')
         r_numCovs = Vector(num_covs)
-    cwd = os.path.dirname(sys.argv[0])
+    # cwd = os.path.dirname(sys.argv[0])
     cwd = os.path.dirname(os.path.abspath(__file__))
     r.setwd(cwd)
     # r.source('./Statistical_analysis/R_scripts/MComBat.R')
