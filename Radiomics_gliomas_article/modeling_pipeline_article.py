@@ -234,7 +234,6 @@ def get_models_randomsearch(output, algo_list, dr_list, fs_list):
 
 
 def get_dataset(dataset, dataset_dic, batch, harmonization='MComBat', covariates=None):
-    brain_text = pd.read_excel(dataset_dic['OR_brain'], index_col=0)
     if dataset == 'S+D':
         stat = pd.read_excel(dataset_dic['S'], index_col=0)
         dyn = pd.read_excel(dataset_dic['D'], index_col=0)
@@ -248,11 +247,6 @@ def get_dataset(dataset, dataset_dic, batch, harmonization='MComBat', covariates
         stat = pd.read_excel(dataset_dic['S'], index_col=0)
         dyn = pd.read_excel(dataset_dic['D'], index_col=0)
         text = pd.read_excel(dataset_dic['OR'], index_col=0)
-        brain_text.index = text.index
-        shape_columns = [_ for _ in brain_text.columns.to_list() if 'Morphology' in _]
-        if shape_columns:
-            brain_text = brain_text.drop(columns=shape_columns)
-        text[brain_text.columns] /= brain_text
         stat_text = pd.concat([stat, text], axis=1)
         if harmonization == 'MComBat':
             ref_batch = 'Vereos'
@@ -271,11 +265,6 @@ def get_dataset(dataset, dataset_dic, batch, harmonization='MComBat', covariates
     elif dataset == 'S+OR':
         stat = pd.read_excel(dataset_dic['S'], index_col=0)
         text = pd.read_excel(dataset_dic['OR'], index_col=0)
-        brain_text.index = text.index
-        shape_columns = [_ for _ in brain_text.columns.to_list() if 'Morphology' in _]
-        if shape_columns:
-            brain_text = brain_text.drop(columns=shape_columns)
-        text[brain_text.columns] /= brain_text
         stat_text = pd.concat([stat, text], axis=1)
         if harmonization == 'MComBat':
             ref_batch = 'Vereos'
@@ -283,6 +272,8 @@ def get_dataset(dataset, dataset_dic, batch, harmonization='MComBat', covariates
         else:
             stat_text = ComBat(stat_text, batch, save_dir=None, covariate=covariates)
         feature_dic = {'S+OR': stat_text}
+    else:
+        raise ValueError
     return feature_dic
 
 
