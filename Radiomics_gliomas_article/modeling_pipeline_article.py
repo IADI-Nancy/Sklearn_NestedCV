@@ -293,7 +293,7 @@ def statistical_pipeline(X, y, pipeline_dic, params_dic, pipeline_options,
     # === NestedCV ===
     metric = 'roc_auc' if len(np.unique(y)) == 2 else 'roc_auc_ovo'
     outer_cv = RepeatedStratifiedKFold(n_splits=10, n_repeats=5, random_state=seed)
-    inner_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=30, random_state=seed)
+    inner_cv = RepeatedStratifiedKFold(n_splits=3, n_repeats=50, random_state=seed)
     refit_method = get_best_index
     clf = NestedCV(pipeline_dic, params_dic, outer_cv=outer_cv, inner_cv=inner_cv, n_jobs=n_jobs,
                    pipeline_options=pipeline_options,
@@ -372,7 +372,7 @@ if __name__ == '__main__':
     feature_dic = get_features_dic('S+D+OR', dataset_dic, batch, harmonization, covariates)
     algo_list = ['LR_L2', 'SVC_linear', 'SVC_RBF', 'RF', 'Nnet']
     dr_list = ['Leger']
-    fs_list = ['wlcx_score_5', 'wlcx_score_10', 'wlcx_score_15', 'wlcx_score_None']
+    fs_list = ['wlcx_score_5', 'wlcx_score_10', 'wlcx_score_15']
     models = get_models_randomsearch(output, algo_list, dr_list, fs_list)
     model_results = {}
     for model_name in models:
