@@ -198,7 +198,7 @@ class NestedCV(BaseEstimator):
                 if callable(pipeline_dic[step]):
                     step_object = DimensionalityReduction(pipeline_dic[step](**kwargs))
                 else:
-                    step_object = DimensionalityReduction(pipeline_dic[step])
+                    step_object = DimensionalityReduction(pipeline_dic[step], **kwargs)
             elif self._string_processing(step) == 'featureselection':
                 step_object = FeatureSelection(pipeline_dic[step], **kwargs)
             else:
