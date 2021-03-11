@@ -32,11 +32,21 @@ class DimensionalityReduction(BaseEstimator):
             Ex :
                 str: method = 'hierarchical_clust_leger'
                 transform: method = sklearn.decomposition.PCA(n_components=0.95, solver='svd_full')
+        corr_metric: str
+            Correlation metric used to compute distance between features
+        threshold: float
+            Correlation threshold used assign clusters to feature. Tree will be cut at a height of 1 - threshold
+        cluster_reduction: str
+            Method used to combine features in the same cluster. Currently implemented : mean and medoid
     """
     dr_methods = ['hierarchical_clust_parmar', 'hierarchical_clust_leger']
+    cluster_reduction_methods = ['mean', 'medoid']
 
-    def __init__(self, method='hierarchical_clust_leger'):
+    def __init__(self, method='hierarchical_clust_leger', corr_metric='spearman', threshold=0.9, cluster_reduction='mean'):
         self.method = method
+        self.corr_metric = corr_metric
+        self.threshold = threshold
+        self.cluster_reduction = cluster_reduction
         self.is_reduced = False
         self.is_fitted = True
 
@@ -83,7 +93,12 @@ class DimensionalityReduction(BaseEstimator):
             raise TypeError('method argument must be a callable or a string')
 
     @staticmethod
-    def hierarchical_clust_parmar(X, y=None):
+    def _get_medoid(n_k, distance_matrix, cluster_labels):
+        df_distance_matrix = pd.DataFrame(distance_matrix)
+        cluster_distance_matrix = df_distance_matrix.loc[cluster_labels == n_k, cluster_labels == n_k]
+        return cluster_distance_matrix.sum(axis=0).idxmin()
+
+    def hierarchical_clust_parmar(self, X, y=None):
         """
         Consensus Clustering with hierarchical clustering as described in :
             Radiomic feature clusters and Prognostic Signatures specific for Lung and Head & Neck cancer.
@@ -94,7 +109,13 @@ class DimensionalityReduction(BaseEstimator):
         cwd = os.path.dirname(sys.argv[0])
         r.setwd(cwd)
         r.source('./Statistical_analysis/R_scripts/hierarchical_clustering_Parmar.R')
-        r_dr_results = r.hierarchical_clustering_parmar(r_df, max_k=20, threshold=0.1)
+        if self.cluster_reduction in self.cluster_reduction_methods:
+            r_dr_results = r.hierarchical_clustering_parmar(r_df, max_k=20, threshold=1 - self.threshold,
+                                                            corr_metric=self.corr_metric,
+                                                            cluster_reduction=self.cluster_reduction)
+        else:
+            raise ValueError('cluster_reduction must be one of : %s. '
+                             '%s was passed' % (self.cluster_reduction_methods, self.cluster_reduction))
         R_object_dict = {}
         keys = r_dr_results.names
         for i in range(len(keys)):
@@ -107,8 +128,7 @@ class DimensionalityReduction(BaseEstimator):
         coefficient_matrix = coefficient_matrix.T
         return coefficient_matrix
 
-    @staticmethod
-    def hierarchical_clust_leger(X, y=None):
+    def hierarchical_clust_leger(self, X, y=None):
         """
         Hierarchical clustering as described in :
             A comparative study of machine learning methods for time-to-event survival data for
@@ -131,19 +151,27 @@ class DimensionalityReduction(BaseEstimator):
         #     coefficient_matrix[:, i] = np.where(dr_results[:, 0] == i + 1, dr_results[:, 1], 0)
         # coefficient_matrix = coefficient_matrix.T
 
-        dissimilarity_matrix = 1 - np.abs(pd.DataFrame(X).corr(method='spearman').to_numpy())
+        dissimilarity_matrix = 1 - np.abs(pd.DataFrame(X).corr(method=self.corr_metric).to_numpy())
         distance_matrix = squareform(dissimilarity_matrix)
         Z = linkage(distance_matrix, method='complete')
-        labels = cut_tree(Z, height=0.1).reshape(-1)
-        corr_matrix = pd.DataFrame(X).corr(method='spearman').to_numpy()
+        labels = cut_tree(Z, height=1 - self.threshold).reshape(-1)
         feature_coefficient = np.zeros(np.size(labels))
-        for n_k in range(np.amax(labels) + 1):
-            n = np.sum(labels == n_k)
-            if n != 1:
-                cluster_corr_matrix = corr_matrix[labels == n_k, :][:, labels == n_k]
-                feature_coefficient[labels == n_k] = np.where(cluster_corr_matrix[:, 0] < 0, -1 / n, 1 / n)
-            else:
-                feature_coefficient[labels == n_k] = 1
+        if self.cluster_reduction == 'mean':
+            corr_matrix = pd.DataFrame(X).corr(method=self.corr_metric).to_numpy()
+            for n_k in range(np.amax(labels) + 1):
+                n = np.sum(labels == n_k)
+                if n != 1:
+                    cluster_corr_matrix = corr_matrix[labels == n_k, :][:, labels == n_k]
+                    feature_coefficient[labels == n_k] = np.where(cluster_corr_matrix[:, 0] < 0, -1 / n, 1 / n)
+                else:
+                    feature_coefficient[labels == n_k] = 1
+        elif self.cluster_reduction == 'medoid':
+            for n_k in range(np.amax(labels) + 1):
+                medoid_idx = self._get_medoid(n_k, dissimilarity_matrix, labels)
+                feature_coefficient[labels == n_k][medoid_idx] = 1
+        else:
+            raise ValueError('cluster_reduction must be one of : %s. '
+                             '%s was passed' % (self.cluster_reduction_methods, self.cluster_reduction))
         coefficient_matrix = np.zeros((X.shape[1], np.amax(labels) + 1))  # Shape of (n_features, nb cluster)
         for i in range(np.amax(labels) + 1):
             coefficient_matrix[:, i] = np.where(labels == i, feature_coefficient, 0)
