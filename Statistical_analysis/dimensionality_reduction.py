@@ -168,7 +168,7 @@ class DimensionalityReduction(BaseEstimator):
         elif self.cluster_reduction == 'medoid':
             for n_k in range(np.amax(labels) + 1):
                 medoid_idx = self._get_medoid(n_k, dissimilarity_matrix, labels)
-                feature_coefficient[labels == n_k][medoid_idx] = 1
+                feature_coefficient[medoid_idx] = 1
         else:
             raise ValueError('cluster_reduction must be one of : %s. '
                              '%s was passed' % (self.cluster_reduction_methods, self.cluster_reduction))
