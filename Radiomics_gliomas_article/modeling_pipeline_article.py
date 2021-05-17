@@ -96,78 +96,6 @@ def save_results(save_dir, clf, X, y, score):
                     df_dr.to_excel(writer, sheet_name='outer%d' % (i + 1))
                 else:
                     pd.DataFrame().to_excel(writer, sheet_name='outer%d' % (i + 1))
-    # Extract coefficients or weights information from models
-    with pd.ExcelWriter(os.path.join(save_dir, 'Model_coefficients.xlsx')) as writer:
-        for i, model in enumerate(clf.outer_pred['model']):
-            if 'DimensionalityReduction' in model.named_steps.keys():
-                coefficient_matrix = model['DimensionalityReduction'].coefficient_matrix
-                features_names = np.array(['Dr_Feature' + str(_ + 1) for _ in range(coefficient_matrix.shape[0])])
-                if 'FeatureSelection' in model.named_steps.keys():
-                    features_names = features_names[model['FeatureSelection'].get_support()]
-                elif 'SelectFromModel' in model.named_steps.keys():
-                    features_names = features_names[model['SelectFromModel'].get_support()]
-            else:
-                features_names = X.columns
-                if 'FeatureSelection' in model.named_steps.keys():
-                    features_names = X.columns[model['FeatureSelection'].get_support()]
-                if 'SelectFromModel' in model.named_steps.keys():
-                    features_names = X.columns[model['SelectFromModel'].get_support()]
-            if isinstance(model['classifier'], LogisticRegression):
-                df = pd.DataFrame(
-                    {'Model_coefficients_' + str(classes): model['classifier'].coef_[classes, :] for classes in
-                     range(model['classifier'].coef_.shape[0])})
-                df.index = features_names
-            elif isinstance(model['classifier'], SVC):
-                classes = model['classifier'].classes_
-                ovo_models = list(combinations(classes, 2))
-                if model['classifier'].get_params()['kernel'] == 'linear':
-                    df = pd.DataFrame(
-                        {'Model_coefficients_%dvs%d' % ovo_models[_]: model['classifier'].coef_[_, :] for _ in
-                         range(model['classifier'].coef_.shape[0])})
-                    df.index = features_names
-                else:
-                    if not 'oversampling' in model.named_steps:
-                        sv_index = model['classifier'].support_
-                        support_indices = np.append([0], np.cumsum(model['classifier'].n_support_))
-                        # Construct df with all SVs and each time the coef associated for the SV in each classifier. If not present N/A
-                        df = pd.DataFrame({'Class_SVs': y[sv_index]})
-                        buffer_array = np.empty((len(sv_index), len(ovo_models)))
-                        buffer_array[:] = np.nan
-                        for label in range(len(classes - 1)):
-                            ovo_coefs = model['classifier'].dual_coef_[:,
-                                        support_indices[label]: support_indices[label + 1]]
-                            ovo_with_class = [_ for _ in ovo_models if classes[label] in _]
-                            for j in range(len(ovo_with_class)):
-                                buffer_array[support_indices[label]: support_indices[label + 1],
-                                ovo_models.index(ovo_with_class[j])] = ovo_coefs[j, :]
-                        for j in range(buffer_array.shape[1]):
-                            df['SV_coefficients_%dvs%d' % ovo_models[j]] = buffer_array[:, j]
-                        df.index = X.index[sv_index]
-            elif isinstance(model['classifier'], RandomForestClassifier):
-                df = pd.DataFrame({'Feature_importances': model['classifier'].feature_importances_})
-                df.index = features_names
-            elif isinstance(model['classifier'], MLPClassifier):
-                indexes = []
-                layer_weights = []
-                bias = []
-                classes = [1] if model['classifier'].classes_.shape[0] == 2 else model['classifier'].classes_
-                for j in range(model['classifier'].n_layers_):
-                    if j == 0:
-                        indexes.extend(features_names)
-                        layer_weights.extend(model['classifier'].coefs_[j])
-                        bias.extend([np.nan for _ in range(len(features_names))])
-                    elif j == model['classifier'].n_layers_ - 1:
-                        indexes.extend(['Class_label_%d' % _ for _ in classes])
-                        layer_weights.extend([np.nan for _ in range(len(classes))])
-                        bias.extend(model['classifier'].intercepts_[j - 1])
-                    else:
-                        indexes.extend(
-                            ['Layer_unit_%d' % _ for _ in range(len(model['classifier'].intercepts_[j - 1]))])
-                        layer_weights.extend(model['classifier'].coefs_[j])
-                        bias.extend(model['classifier'].intercepts_[j - 1])
-                df = pd.DataFrame({'Layer_weights_towards_next_layer': layer_weights, 'Layer_bias': bias})
-                df.index = indexes
-            df.to_excel(writer, sheet_name='outer%d' % (i + 1))
     # Extract predictions from model
     df = pd.DataFrame({key: clf.outer_pred[key] for key in clf.outer_pred if key != 'model'}, dtype='object')
     df.to_excel(os.path.join(save_dir, 'Model_predictions.xlsx'))
@@ -185,6 +113,7 @@ def format_feature_name(feature_name):
         del_substrings += ['_.3D._']
     for substring in del_substrings:
         feature_name = feature_name.replace(substring, '')
+    feature_name = feature_name.replace('.', '_')
     if 'matrix' in feature_name:
         matrix_name = feature_name.split('matrix')[0]
         if 'occurrence' in matrix_name:
@@ -198,6 +127,9 @@ def format_feature_name(feature_name):
         elif 'Neighbouring_grey_level_dependence' in matrix_name:
             matrix_name = 'NGLDM'
         feature_name = '_'.join([matrix_name, feature_name.split('matrix')[1]])
+    feature_name.replace('__', '_')
+    if feature_name[-1] == '_':
+        feature_name = feature_name[:-1]
     return feature_name
 
 
@@ -241,7 +173,9 @@ def get_models_randomsearch(output, algo_list, dr_list, fs_list):
                 params_dic = {'classifier': classifier_params}
 
                 if dim_red == 'Leger':
-                    pipeline_options = {'classifier': classifier_options}
+                    pipeline_options = {'DimensionalityReduction': {'corr_metric': 'spearman', 'threshold': 0.9,
+                                                                    'cluster_reduction': 'medoid'},
+                                        'classifier': classifier_options}
                     method = '_'.join(fs.split('_')[:-1])
                     n_features = None if fs.split('_')[-1] == 'None' else int(fs.split('_')[-1])
                     pipeline_dic = {'scale': StandardScaler,
@@ -469,9 +403,9 @@ if __name__ == '__main__':
         model = model_dic['Model']
         X_train, y_train, X_test, y_test = model_dic['X_train'], model_dic['y_train'], model_dic['X_test'], model_dic['y_test']
         # Create model explainer
-        if isinstance(model[-1], RandomForestClassifier):
+        if isinstance(model, RandomForestClassifier):
             explainer = shap.TreeExplainer(model, feature_names=feature_names)
-        elif isinstance(model[-1], LogisticRegression):
+        elif isinstance(model, LogisticRegression):
             explainer = shap.LinearExplainer(model, X_train, feature_names=feature_names)
         else:
             if hasattr(model[-1], 'decision_function'):
