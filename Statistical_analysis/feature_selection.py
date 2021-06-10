@@ -58,6 +58,8 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
             Define whether the current problem is a classification problem.
         random_state: int, RandomState instance or None (default=None)
             Controls the randomness of the estimator.
+        fit_params: dict (default=None)
+            Dictionary of additional parameters used to fit methods such as stability selection or boruta shap
         """
     scoring_methods = {'name': ['auc_roc', 'pearson_corr', 'spearman_corr', 'mi', 'wlcx_score'],
                        'score_indicator_lower': [False, False, False, False, False]}
@@ -72,7 +74,7 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
 
     def __init__(self, method='mrmr', bootstrap=False, n_bsamples=100, n_selected_features=20,
                  ranking_aggregation=None, ranking_done=False, score_indicator_lower=None,
-                 classification=True, random_state=None):
+                 classification=True, random_state=None, fit_params=None):
         self.method = method
         self.ranking_done = ranking_done
         self.score_indicator_lower = score_indicator_lower
@@ -83,6 +85,7 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
         self.ranking_aggregation = ranking_aggregation
         self.classification = classification
         self.random_state = random_state
+        self.fit_params = fit_params
         self.accepted_features_index = None
         self.is_fitted = False
 
@@ -265,7 +268,7 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
         return ranks
 
     # === Automatic methods ===
-    def boruta_shap(self, X, y, **fit_params):
+    def boruta_shap(self, X, y):
         """
         Wrapper around BorutaShap package which is based on Boruta feature selection algorithm [1] with the addition
         of feature importance assessed using SHAP values [2]. Tree based algorithm are used to allow the use of
@@ -275,11 +278,12 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
         [2] Lundberg and Lee, A Unified Approach to Interpreting Model Predictions. arXiv:1705.07874, 2017
         [3] Lundberg et al., Consistent Individualized Feature Attribution for Tree Ensembles. arXiv:1802.03888, 2019
         """
-        init_params_dic = {'model': fit_params.get('model', None),
-                           'importance_measure': fit_params.get('importance_measure', 'shap'),
-                           'classification': fit_params.get('classification', self.classification),
-                           'percentile': fit_params.get('percentile', 100),
-                           'pvalue': fit_params.get('pvalue', 0.05)}
+        init_params_dic = {'model': self.fit_params.get('model', None),
+                           'importance_measure': self.fit_params.get('importance_measure', 'shap'),
+                           'classification': self.fit_params.get('classification', self.classification),
+                           'percentile': self.fit_params.get('percentile', 100),
+                           'pvalue': self.fit_params.get('pvalue', 0.05)}
+        fit_params = self.fit_params.copy()
         for init_params in init_params_dic:
             if init_params in fit_params:
                 fit_params.pop(init_params)
@@ -295,7 +299,7 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
             feature_selector.TentativeRoughFix()
         self.accepted_features_index = [int(_) for _ in feature_selector.accepted]
 
-    def stability_selection(self, X, y, **fit_params):
+    def stability_selection(self, X, y):
         """
         Wrapper around stability-selection package which is based on the stability selection feature selection
         algorithm [1]. Bootstrap can be performed using complementary pairs subsampling [2].
@@ -305,19 +309,20 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
         [2] Shah, R.D. and Samworth, R.J., 2013. Variable selection with error control: another look at stability
         selection. Journal of the Royal Statistical Society: Series B (Statistical Methodology), 75(1), pp.55-80.
         """
-        init_params_dic = {'base_estimator': fit_params.get('base_estimator', LogisticRegression(penalty='l1',
-                                                                                                 solver='liblinear')),
-                           'lambda_name': fit_params.get('lambda_name', 'C'),
-                           'lambda_grid': fit_params.get('lambda_grid', np.logspace(-5, -2, 25)),
-                           'n_bootstrap_iterations': fit_params.get('n_bootstrap_iterations', self.n_bsamples),
-                           'sample_fraction': fit_params.get('sample_fraction', 0.5),
-                           'threshold': fit_params.get('threshold', 0.6),
-                           'bootstrap_func': fit_params.get('bootstrap_func', 'subsample'),
-                           'bootstrap_threshold': fit_params.get('bootstrap_threshold', None),
-                           'verbose': fit_params.get('verbose', 0),
-                           'n_jobs': fit_params.get('n_jobs', 1),
-                           'pre_dispatch': fit_params.get('pre_dispatch', '2*n_jobs'),
-                           'random_state': fit_params.get('random_state', self.random_state)}
+        init_params_dic = {'base_estimator': self.fit_params.get('base_estimator', LogisticRegression(penalty='l1',
+                                                                                                      solver='liblinear')),
+                           'lambda_name': self.fit_params.get('lambda_name', 'C'),
+                           'lambda_grid': self.fit_params.get('lambda_grid', np.logspace(-5, -2, 25)),
+                           'n_bootstrap_iterations': self.fit_params.get('n_bootstrap_iterations', self.n_bsamples),
+                           'sample_fraction': self.fit_params.get('sample_fraction', 0.5),
+                           'threshold': self.fit_params.get('threshold', 0.6),
+                           'bootstrap_func': self.fit_params.get('bootstrap_func', 'subsample'),
+                           'bootstrap_threshold': self.fit_params.get('bootstrap_threshold', None),
+                           'verbose': self.fit_params.get('verbose', 0),
+                           'n_jobs': self.fit_params.get('n_jobs', 1),
+                           'pre_dispatch': self.fit_params.get('pre_dispatch', '2*n_jobs'),
+                           'random_state': self.fit_params.get('random_state', self.random_state)}
+        fit_params = self.fit_params.copy()
         for init_params in init_params_dic:
             if init_params in fit_params:
                 fit_params.pop(init_params)
@@ -376,7 +381,7 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
         return rankdata(importance_score, method='ordinal')
 
     # === Applying feature selection ===
-    def fit(self, X, y=None, **fit_params):
+    def fit(self, X, y=None):
         """A method to fit feature selection.
             Parameters
             ----------
@@ -385,8 +390,6 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
                 n_features is the number of features.
             y : pandas dataframe or array-like of shape (n_samples,)
                 Target vector relative to X.
-            **fit_params : dict
-                Additional fit parameters.
             Returns
             -------
             It will not return directly the values, but it's accessable from the class object it self.
@@ -401,7 +404,7 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
         if self.ranking_aggregation is not None:
             aggregation_method = self._get_aggregation_method()
         if self.n_selected_features == 'automatic':
-            fs_func(X, y, **fit_params)
+            fs_func(X, y)
         else:
             self.n_selected_features = self._check_n_selected_feature(X, self.n_selected_features)
             if self.bootstrap:
