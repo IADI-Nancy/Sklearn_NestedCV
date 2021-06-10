@@ -121,6 +121,7 @@ class DimensionalityReduction(BaseEstimator):
         for i in range(len(keys)):
             R_object_dict[keys[i]] = np.array(r_dr_results[i])
         dr_results = pd.DataFrame(R_object_dict).to_numpy()
+        self.cluster_labels = dr_results[:, 0]
         nb_cluster = np.amax(dr_results[:, 0]).astype(int)
         coefficient_matrix = np.zeros((dr_results.shape[0], nb_cluster))  # Shape of (n_features, nb cluster)
         for i in range(nb_cluster):
@@ -155,6 +156,7 @@ class DimensionalityReduction(BaseEstimator):
         distance_matrix = squareform(dissimilarity_matrix)
         Z = linkage(distance_matrix, method='complete')
         labels = cut_tree(Z, height=1 - self.threshold).reshape(-1)
+        self.cluster_labels = labels
         feature_coefficient = np.zeros(np.size(labels))
         if self.cluster_reduction == 'mean':
             corr_matrix = pd.DataFrame(X).corr(method=self.corr_metric).to_numpy()
