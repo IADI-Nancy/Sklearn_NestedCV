@@ -5,6 +5,7 @@ import sys
 from rpy2.robjects import r, pandas2ri, numpy2ri, Vector, NULL
 from collections.abc import Mapping
 from scipy.stats import mannwhitneyu, kruskal
+from neuroCombat import neuroCombat
 pandas2ri.activate()
 numpy2ri.activate()
 
@@ -141,6 +142,89 @@ def MComBat(X, batch, ref_batch=None, covariate=None, num_covs=None, save_dir=No
         R_object_dict[keys[i]] = np.array(r_dr_results[i])
     results = pd.DataFrame(R_object_dict)
     results.index = row_names
+    if save_dir is not None:
+        results.to_excel(os.path.join(save_dir, 'Feature_MComBat.xlsx'))
+    return results
+
+
+def neuroComBat(X, batch, ref_batch=None, covariate=None, num_covs=None,
+                parametric=False, empirical_bayes=True, mean_only=False, save_dir=None):
+    """
+    :param X: array like or pandas DataFrame
+        Data to harmonize
+    :param batch: array like or pandas DataFrame
+        Batch/scanner covariates to use for harmonization
+    :param ref_batch: string or None, default=None
+        Batch (site or scanner) to be used as reference for batch adjustment.
+    :param covariate: array like or pandas DataFrame, default=None
+        Additional covariates that should be preserved during harmonization
+    :param num_covs: int or array like of int, default=None
+        Index(es) of numerical/continuous variables to be preserved during harmonization
+    :param parametric: boolean, default=False
+        Should parametric adjustements be performed?
+    :param empirical_bayes: boolean, default=True
+        Should Empirical Bayes be performed?
+    :param mean_only: boolean, default=False
+         Should only be the mean adjusted (no scaling)?
+    :param save_dir: string, default=None
+        Directory to save the harmonized data
+    :return:
+    """
+    # Check X
+    if not isinstance(X, (pd.DataFrame, pd.Series)):
+        if isinstance(X, (list, tuple, np.ndarray, Mapping)):
+            df = pd.DataFrame(X)
+        else:
+            raise TypeError('X must be an array-like object, dictionary or pandas Dataframe/Series')
+    else:
+        df = X
+
+    # Check covariate
+    if covariate is None:
+        covariate = pd.DataFrame({})
+    else:
+        if not isinstance(X, (pd.DataFrame, pd.Series)):
+            if isinstance(X, (list, tuple, np.ndarray, Mapping)):
+                covariate = pd.DataFrame(covariate)
+            else:
+                raise TypeError('covariate array must be an array like or pandas Dataframe/Series')
+
+    # Check numCovs
+    if num_covs is not None:
+        if isinstance(num_covs, int):
+            num_covs = [num_covs]
+        if not isinstance(num_covs, (list, tuple, np.ndarray)):
+            raise TypeError('num_covs must be an int or array like of int equal to the index of numerical covariates')
+        num_covs = covariate.index[np.array(num_covs)].to_list()
+    cat_covs = [_ for _ in covariate.index if _ not in num_covs]
+
+    # Check batch
+    if not isinstance(batch, (list, tuple, np.ndarray)):
+        if isinstance(batch, pd.DataFrame) or isinstance(batch, pd.Series):
+            batch = batch.to_numpy()
+        else:
+            raise TypeError('batch array must be an array like or pandas Dataframe/Series')
+    else:
+        batch = np.array(batch)
+    if len(batch.shape) != 1:
+        if len(batch.shape) == 2 and batch.shape[1] == 1:
+            batch.reshape(-1)
+        else:
+            raise ValueError('batch array must be 1D or 2D with second dimension equal to 1')
+    if len(np.unique(batch)) <= 1:
+        raise ValueError('batch array must have at least 2 classes')
+    batch = pd.DataFrame(batch, columns='batch')
+
+    # Concatenate batch and covariates
+    covariate = pd.concat([covariate, batch], ignore_index=True)
+
+    # Check ref batch
+    if ref_batch not in np.unique(batch) and ref_batch is not None:
+        raise ValueError('ref_batch must be one of np.unique(batch) values')
+
+    results = neuroCombat(dat=df, covars=covariate, batch_col='batch', categorical_cols=cat_covs,
+                          continuous_cols=num_covs, ref_batch=ref_batch, parametric=parametric,
+                          eb=empirical_bayes, mean_only=mean_only)['data']
     if save_dir is not None:
         results.to_excel(os.path.join(save_dir, 'Feature_MComBat.xlsx'))
     return results
