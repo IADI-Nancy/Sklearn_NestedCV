@@ -21,6 +21,7 @@ R will be installed automatically in your conda/anaconda environment with rpy2 b
 Other missing R packages used in scripts will be downloaded automatically.
 
 If you use this wrapper in a scientific publication, we would appreciate citations to the following paper :
+```
 @article{zaragori_18_2021,
 	title = {$^{\textrm{18}}$ {F}-{FDOPA} {PET} for the non-invasive prediction of glioma molecular parameters: a radiomics study},
 	issn = {0161-5505, 2159-662X},
@@ -34,4 +35,4 @@ If you use this wrapper in a scientific publication, we would appreciate citatio
 	month = may,
 	year = {2021},
 	pages = {jnumed.120.261545},
-} 
+} ```
