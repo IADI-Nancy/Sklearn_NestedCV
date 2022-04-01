@@ -6,8 +6,8 @@ import pandas as pd
 from collections.abc import Mapping
 from sklearn.pipeline import Pipeline as skPipeline
 from imblearn.pipeline import Pipeline as imbPipeline
-from .dimensionality_reduction import DimensionalityReduction
-from .feature_selection import FeatureSelection
+from dimensionality_reduction import DimensionalityReduction
+from feature_selection import FeatureSelection
 from sklearn.model_selection._split import check_cv
 from sklearn.base import is_classifier
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
@@ -17,7 +17,7 @@ from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator, clone
 from joblib import Memory
 from shutil import rmtree
-from skopt import BayesSearchCV
+from bayes_search_multiscore import BayesSearchCV
 
 
 class NestedCV(BaseEstimator):
