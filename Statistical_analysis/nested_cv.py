@@ -17,6 +17,7 @@ from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator, clone
 from joblib import Memory
 from shutil import rmtree
+from skopt import BayesSearchCV
 
 
 class NestedCV(BaseEstimator):
@@ -106,6 +107,10 @@ class NestedCV(BaseEstimator):
         See sklearn.model_selection.GridSearchCV for more details.
     verbose: int (default=1)
         Controls the verbosity: the higher, the more messages.
+    error_score: 'raise' or numeric (default=np.nan)
+        Value to assign to the score if an error occurs in estimator fitting. If set to ‘raise’, the error is raised.
+        If a numeric value is given, FitFailedWarning is raised. This parameter does not affect the refit step, which
+        will always raise the error.
     refit_inner: boolean, string or callable (default=True)
         Refit an estimator using the best found parameters on the whole outer training set
         Argument will be given to GridsearchCV that select hyperparameters in the inner loop :
@@ -125,15 +130,16 @@ class NestedCV(BaseEstimator):
         the overfitting/underfitting trade-off. However computing the scores on the training set can be
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
-    randomized_search: boolean (default=False)
-        Wether to use gridsearch or randomized search for hyperparameters optimization in inner loop
-    randomized_search_iter: int (default=10)
-        Number of parameter settings that are sampled. n_iter trades off runtime vs quality of the solution.
+    search_type: string (default='grid')
+        Specify the ype of search used for hyperparameter optimization. Options are 'grid', 'random', 'bayesian'
+    search_iter: int (default=10)
+        Number of parameter settings that are sampled. n_iter trades off runtime vs quality of the solution. Used only
+        when search_type == 'random' or search_type == 'bayesian'
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options={}, metric='roc_auc', verbose=1, refit_outer=True,
-                 refit_inner=True, return_train_score=False, random_state=None, randomized_search=False,
-                 randomized_search_iter=10):
+                 error_score=np.nan, refit_inner=True, return_train_score=False, random_state=None, search_type='grid',
+                 search_iter=10, bayesian_search_kwargs={}):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
@@ -145,11 +151,13 @@ class NestedCV(BaseEstimator):
         self.metric = metric
         self.verbose = verbose
         self.refit_outer = refit_outer
+        self.error_score = error_score
         self.refit_inner = refit_inner
         self.return_train_score = return_train_score
         self.random_state = random_state
-        self.randomized_search = randomized_search
-        self.randomized_search_iter = randomized_search_iter
+        self.search_type = search_type
+        self.search_iter = search_iter
+        self.bayesian_search_kwargs = bayesian_search_kwargs
 
     @staticmethod
     def _string_processing(key):
@@ -338,17 +346,34 @@ class NestedCV(BaseEstimator):
                 memory = Memory(location=location, verbose=0)
                 inner_model = clone(self.model)
                 inner_model.set_params(memory=memory)
-                if self.randomized_search:
+                if self.search_type == 'random':
                     pipeline_inner = RandomizedSearchCV(inner_model, self.params_grid, scoring=self.scorers,
-                                                        n_jobs=self.n_jobs, cv=inner_cv, n_iter=self.randomized_search_iter,
+                                                        n_jobs=self.n_jobs, cv=inner_cv, n_iter=self.search_iter,
                                                         return_train_score=self.return_train_score, verbose=self.verbose - 1,
                                                         pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
-                                                        random_state=self.random_state)
-                else:
+                                                        random_state=self.random_state, error_score=self.error_score)
+                elif self.search_type == 'grid':
                     pipeline_inner = GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
                                                   return_train_score=self.return_train_score, verbose=self.verbose - 1,
-                                                  pre_dispatch=self.pre_dispatch, refit=self.refit_inner)
-                pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
+                                                  pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
+                                                  error_score=self.error_score)
+                elif self.search_type == 'bayesian':
+                    optimizer_kwargs = self.bayesian_search_kwargs.get('optimizer_kwargs', {})
+                    n_points = self.bayesian_search_kwargs.get('n_points', 1)
+                    iid = self.bayesian_search_kwargs.get('iid', True)
+                    pipeline_inner = BayesSearchCV(inner_model, self.params_grid, scoring=self.scorers, iid=True,
+                                                   optimizer_kwargs=optimizer_kwargs, n_points=n_points,
+                                                   n_jobs=self.n_jobs, cv=inner_cv, n_iter=self.search_iter,
+                                                   return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                                   pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
+                                                   random_state=self.random_state, fit_params=fit_params,
+                                                   error_score=self.error_score)
+
+                else:
+                    raise ValueError("Incorrect search_type: %s (should be one of 'grid', 'random' or 'bayesian'"
+                                     ")" % self.search_type)
+                if self.search_type != 'bayesian':
+                    pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
                 self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
                                            'mean_test_score': pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric],
                                            'std_test_score': pipeline_inner.cv_results_['std_test_%s' % self.refit_metric]})
