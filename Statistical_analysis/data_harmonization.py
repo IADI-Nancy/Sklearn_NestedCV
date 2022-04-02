@@ -196,7 +196,9 @@ def neuroComBat(X, batch, ref_batch=None, covariate=None, num_covs=None,
         if not isinstance(num_covs, (list, tuple, np.ndarray)):
             raise TypeError('num_covs must be an int or array like of int equal to the index of numerical covariates')
         num_covs = covariate.index[np.array(num_covs)].to_list()
-    cat_covs = [_ for _ in covariate.index if _ not in num_covs]
+        cat_covs = [_ for _ in covariate.columns if _ not in num_covs]
+    else:
+        cat_covs = [_ for _ in covariate.columns]
 
     # Check batch
     if not isinstance(batch, (list, tuple, np.ndarray)):
@@ -216,8 +218,9 @@ def neuroComBat(X, batch, ref_batch=None, covariate=None, num_covs=None,
     batch = pd.DataFrame(batch, columns='batch')
 
     # Concatenate batch and covariates
-    covariate = pd.concat([covariate, batch], ignore_index=True)
-
+    covariate.reset_index(drop=True, inplace=True)
+    batch.reset_index(drop=True, inplace=True)
+    covariate = pd.concat([covariate, batch], axis=1)
     # Check ref batch
     if ref_batch not in np.unique(batch) and ref_batch is not None:
         raise ValueError('ref_batch must be one of np.unique(batch) values')
