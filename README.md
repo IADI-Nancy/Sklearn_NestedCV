@@ -8,7 +8,6 @@ In a context of radiomics studies with data coming from different devices, some 
 - numpy
 - sklearn
 - pandas
-- rpy2
 - scipy
 - imblearn
 - skfeature
@@ -16,9 +15,6 @@ In a context of radiomics studies with data coming from different devices, some 
 - BorutaShap
 - neuroCombat
 
-R will be installed automatically in your conda/anaconda environment with rpy2 by using `conda install -c r rpy2`.
-`xml` package from R should be installed manually using `conda install -c r r-xml`
-Other missing R packages used in scripts will be downloaded automatically.
 
 If you use this wrapper in a scientific publication, we would appreciate citations to the following paper :
 ```
