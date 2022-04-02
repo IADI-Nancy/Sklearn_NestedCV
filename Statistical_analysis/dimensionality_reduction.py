@@ -1,5 +1,4 @@
 import os
-import warnings
 import pandas as pd
 import numpy as np
 import sys
@@ -48,7 +47,7 @@ class DimensionalityReduction(BaseEstimator):
         self.threshold = threshold
         self.cluster_reduction = cluster_reduction
         self.is_reduced = False
-        self.is_fitted = True
+        self.is_fitted = False
 
     @staticmethod
     def _check_X_Y(X, y):
@@ -180,16 +179,6 @@ class DimensionalityReduction(BaseEstimator):
         coefficient_matrix = coefficient_matrix.T
 
         return coefficient_matrix
-
-    def univariate_analysis(self, y, adjusted_method='BH', save_dir=None):
-        """
-        Function to perform statistical univarite analysis on reduced feature dataset
-        """
-        if self.is_reduced:
-            self.univariate_results = univariate_analysis(self.reduced_features, y, adjusted_method, save_dir)
-        else:
-            raise NotFittedError('transform() or fit_transform() must be call before calling univariate_analysis()')
-        return self.univariate_results
 
     # === Applying dimensionnality reduction ===
     def fit(self, X, y=None):
