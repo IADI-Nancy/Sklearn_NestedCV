@@ -1,3 +1,4 @@
+import copy
 import string
 import warnings
 import tempfile
@@ -80,6 +81,7 @@ class NestedCV(BaseEstimator):
             new_parameters_grid.append(parameters_dic)
         return new_parameters_grid
 
+    # TODO : change this to treat DimensionalityReduction and FeatureSelection as other classes. Pass pipeline directly?
     def _get_pipeline(self, pipeline_dic):
         pipeline_steps = []
         for step in pipeline_dic.keys():
@@ -125,8 +127,11 @@ class NestedCV(BaseEstimator):
             y = np.array(y)
         return X, y
 
-    def _get_param_optimizer(self, inner_model, inner_cv):
-        raise NotImplementedError('_get_param_optimizer not implemented')
+    def _get_inner_param_optimizer(self, inner_model, inner_cv):
+        raise NotImplementedError('_get_inner_param_optimizer not implemented')
+
+    def _get_outer_param_optimizer(self, final_model, outer_cv):
+        raise NotImplementedError('_get_outer_param_optimizer not implemented')
 
     def fit(self, X, y=None, groups=None, **fit_params):
         """
@@ -171,6 +176,8 @@ class NestedCV(BaseEstimator):
 
         if self.pipeline_options is None:
             self.pipeline_options_ = {}
+        else:
+            self.pipeline_options_ = dict(self.pipeline_options)
         self._check_pipeline_dic(self.pipeline_dic)
         self.model = self._get_pipeline(self.pipeline_dic)
         self.params_grid = self._get_parameters_grid(self.params_dic)
@@ -231,7 +238,7 @@ class NestedCV(BaseEstimator):
                 memory = Memory(location=location, verbose=0)
                 inner_model = clone(self.model)
                 inner_model.set_params(memory=memory)
-                pipeline_inner = self._get_param_optimizer(inner_model, inner_cv)
+                pipeline_inner = self._get_inner_param_optimizer(inner_model, inner_cv)
                 pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
                 self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
                                            'mean_test_score': pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric],
@@ -283,12 +290,12 @@ class NestedCV(BaseEstimator):
             memory = Memory(location=location, verbose=0)
             final_model = clone(self.model)
             final_model.set_params(memory=memory)
-            pipeline_refit = GridSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric], n_jobs=self.n_jobs,
-                                          cv=outer_cv, verbose=self.verbose - 1)
+            pipeline_refit = self._get_outer_param_optimizer(final_model, outer_cv)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
             self.best_estimator_ = pipeline_refit.best_estimator_
             memory.clear(warn=False)
             rmtree(location)
+        return self
 
     def score(self, X, y=None):
         """Returns the score on the given data, if the estimator has been refit.
@@ -538,10 +545,15 @@ class GridSearchNestedCV(NestedCV):
                          metric=metric, verbose=verbose, refit_outer=refit_outer, error_score=error_score,
                          refit_inner=refit_inner, return_train_score=return_train_score)
 
-    def _get_param_optimizer(self, inner_model, inner_cv):
+    def _get_inner_param_optimizer(self, inner_model, inner_cv):
         return GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
                             return_train_score=self.return_train_score, verbose=self.verbose - 1,
                             pre_dispatch=self.pre_dispatch, refit=self.refit_inner, error_score=self.error_score)
+
+    def _get_outer_param_optimizer(self, final_model, outer_cv):
+        return GridSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric], n_jobs=self.n_jobs,
+                            cv=outer_cv, verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
+                            error_score=self.error_score)
 
 
 class RandomSearchNestedCV(NestedCV):
@@ -670,12 +682,18 @@ class RandomSearchNestedCV(NestedCV):
         self.n_iter = n_iter
         self.random_state = random_state
 
-    def _get_param_optimizer(self, inner_model, inner_cv):
+    def _get_inner_param_optimizer(self, inner_model, inner_cv):
         return RandomizedSearchCV(inner_model, self.params_grid, scoring=self.scorers,
                                   n_jobs=self.n_jobs, cv=inner_cv, n_iter=self.n_iter,
                                   return_train_score=self.return_train_score, verbose=self.verbose - 1,
                                   pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
                                   random_state=self.random_state, error_score=self.error_score)
+
+    def _get_outer_param_optimizer(self, final_model, outer_cv):
+        return RandomizedSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric],
+                                  n_jobs=self.n_jobs,  cv=outer_cv, n_iter=self.n_iter,
+                                  verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
+                                  error_score=self.error_score, random_state=self.random_state)
 
 
 class BayesianSearchNestedCV(NestedCV):
@@ -813,9 +831,15 @@ class BayesianSearchNestedCV(NestedCV):
         self.optimizer_kwargs = optimizer_kwargs
         self.n_points = n_points
 
-    def _get_param_optimizer(self, inner_model, inner_cv):
+    def _get_inner_param_optimizer(self, inner_model, inner_cv):
         return BayesSearchCV(inner_model, self.params_grid, scoring=self.scorers,
                              optimizer_kwargs=self.optimizer_kwargs, n_points=self.n_points, n_jobs=self.n_jobs,
                              cv=inner_cv, n_iter=self.n_iter, return_train_score=self.return_train_score,
                              verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
                              random_state=self.random_state, error_score=self.error_score)
+
+    def _get_outer_param_optimizer(self, final_model, outer_cv):
+        return BayesSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric],
+                             optimizer_kwargs=self.optimizer_kwargs, n_points=self.n_points, n_jobs=self.n_jobs,
+                             cv=outer_cv, n_iter=self.n_iter, verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
+                             error_score=self.error_score, random_state=self.random_state)

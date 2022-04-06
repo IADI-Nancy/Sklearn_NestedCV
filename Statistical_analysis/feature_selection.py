@@ -18,6 +18,7 @@ except ModuleNotFoundError:
     raise ModuleNotFoundError('sklearn.externals.joblib was deprecated in v0.21 of scikit-learn. Must import directly'
                               'joblib. See PR https://github.com/scikit-learn-contrib/stability-selection/pull/34')
 
+# TODO : class FeatureSelection, FilterFeatureSelection, AutomaticFeatureSelection (classe pour boruta etc)
 
 class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
     """A general class to handle feature selection according to a scoring/ranking method. Bootstrap is implemented
