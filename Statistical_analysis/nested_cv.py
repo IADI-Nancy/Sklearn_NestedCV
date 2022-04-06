@@ -133,6 +133,38 @@ class NestedCV(BaseEstimator):
     def _get_outer_param_optimizer(self, final_model, outer_cv):
         raise NotImplementedError('_get_outer_param_optimizer not implemented')
 
+    def _check_refit_for_multimetric(self):
+        if self.multimetric_:
+            if callable(self.refit_inner):
+                raise ValueError('If inner loops use multimetric scoring and the user want to refit according to a '
+                                 'callable, the latter must be passed in a dictionary {score: callable} with score '
+                                 'being the score name with which the score on different sets will be calculated')
+            if self.refit_inner is not False and (not isinstance(self.refit_inner, str) or
+                                                  # This will work for both dict / list (tuple)
+                                                  self.refit_inner not in self.scorers):
+                if isinstance(self.refit_inner, Mapping):
+                    if len(self.refit_inner.keys()) > 1:
+                        raise ValueError(
+                            'refit_inner dict must have only one key, got %d' % len(self.refit_inner.keys()))
+                    self.refit_metric = list(self.refit_inner.keys())[0]
+                    self.refit_inner = self.refit_inner[self.refit_metric]
+                else:
+                    raise ValueError("For multi-metric scoring, the parameter "
+                                     "refit must be set to a scorer key or a "
+                                     "dict with scorer key and callable value to refit an estimator with the "
+                                     "best parameter setting on the whole "
+                                     "data and make the best_* attributes "
+                                     "available for that metric. If this is "
+                                     "not needed, refit should be set to "
+                                     "False explicitly. %r was passed."
+                                     % self.refit_inner)
+            else:
+                self.refit_metric = self.refit_inner
+        else:
+            self.refit_metric = 'score'
+            if self.refit_inner is True:
+                self.refit_inner = 'score'
+
     def fit(self, X, y=None, groups=None, **fit_params):
         """
         Fit Nested CV with all sets of parameters.
@@ -182,8 +214,9 @@ class NestedCV(BaseEstimator):
         self.model = self._get_pipeline(self.pipeline_dic)
         self.params_grid = self._get_parameters_grid(self.params_dic)
 
-        outer_cv = check_cv(self.outer_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
-        inner_cv = check_cv(self.inner_cv, y, is_classifier(self.model[-1]))  # Last element of pipeline = estimator
+        # Last element of pipeline = estimator
+        outer_cv = check_cv(self.outer_cv, y, classifier=is_classifier(self.model[-1]))
+        inner_cv = check_cv(self.inner_cv, y, classifier=is_classifier(self.model[-1]))
 
         self.outer_pred = {'train': [], 'test': [], 'model': [], 'predict_train': [], 'predict_test': []}
         if hasattr(self.model[-1], 'predict_proba'):
@@ -197,37 +230,13 @@ class NestedCV(BaseEstimator):
             self.outer_results.update({'outer_train_score': []})
 
         # From sklearn.model_selection._search.BasesearchCV
-        self.scorers, self.multimetric_ = _check_multimetric_scoring(self.model, scoring=self.metric)
-        if self.multimetric_:
-            if callable(self.refit_inner):
-                raise ValueError('If inner loops use multimetric scoring and the user want to refit according to a '
-                                 'callable, the latter must be passed in a dictionnary {score: callable} with score '
-                                 'being the score name with which the score on different sets wiil be calculated')
-            if self.refit_inner is not False and (not isinstance(self.refit_inner, str) or
-                                                  # This will work for both dict / list (tuple)
-                                                  self.refit_inner not in self.scorers):
-                if isinstance(self.refit_inner, Mapping):
-                    if len(self.refit_inner.keys()) > 1:
-                        raise ValueError(
-                            'refit_inner dict must have only one key, got %d' % len(self.refit_inner.keys()))
-                    self.refit_metric = list(self.refit_inner.keys())[0]
-                    self.refit_inner = self.refit_inner[self.refit_metric]
-                else:
-                    raise ValueError("For multi-metric scoring, the parameter "
-                                     "refit must be set to a scorer key or a "
-                                     "dict with scorer key and callable value to refit an estimator with the "
-                                     "best parameter setting on the whole "
-                                     "data and make the best_* attributes "
-                                     "available for that metric. If this is "
-                                     "not needed, refit should be set to "
-                                     "False explicitly. %r was passed."
-                                     % self.refit_inner)
-            else:
-                self.refit_metric = self.refit_inner
+        if callable(self.metric) or self.metric is None or isinstance(self.metric, str):
+            self.scorers = {"score": check_scoring(self.model, scoring=self.metric)}
+            self.multimetric_ = False
         else:
-            self.refit_metric = 'score'
-            if self.refit_inner is True:
-                self.refit_inner = 'score'
+            self.scorers = _check_multimetric_scoring(self.model, scoring=self.metric)
+            self.multimetric_ = True
+        self._check_refit_for_multimetric()
 
         for k_outer, (train_outer_index, test_outer_index) in enumerate(outer_cv.split(X, y, groups)):
             if self.verbose > 1:
@@ -524,8 +533,10 @@ class GridSearchNestedCV(NestedCV):
             best parameters for refitting the estimator at the end. Where there are considerations other than maximum
             score in choosing a best estimator, refit can be set to a function which returns the selected best_index_
             given cv_results_. In that case, the best_estimator_ and best_parameters_ will be set according to the
-            returned best_index_.The refitted estimator is made available at the best_estimator_ attribute and permits
-            using predict directly on this GridSearchCV instance.
+            returned best_index_. The refitted estimator is made available at the best_estimator_ attribute and permits
+            using predict directly on this GridSearchCV instance. If inner loops use multimetric scoring and the user
+            want to refit according to a callable, the latter must be passed in a dictionary {score: callable} with
+            score being the score name with which the score on different sets will be calculated
     refit_outer: boolean (default=True)
         Refit an estimator using the whole dataset in two steps:
         1. Hyperparameter optimization with a gridsearch cross-validation (same parameter as outer CV).
@@ -649,16 +660,18 @@ class RandomSearchNestedCV(NestedCV):
         will always raise the error.
     refit_inner: boolean, string or callable (default=True)
         Refit an estimator using the best found parameters on the whole outer training set
-        Argument will be given to GridsearchCV that select hyperparameters in the inner loop :
+        Argument will be given to search method that select hyperparameters in the inner loop :
             For multiple metric evaluation, this needs to be a string denoting the scorer that would be used to find the
             best parameters for refitting the estimator at the end. Where there are considerations other than maximum
             score in choosing a best estimator, refit can be set to a function which returns the selected best_index_
             given cv_results_. In that case, the best_estimator_ and best_parameters_ will be set according to the
             returned best_index_.The refitted estimator is made available at the best_estimator_ attribute and permits
-            using predict directly on this GridSearchCV instance.
+            using predict directly on this RandomSearchCV instance. If inner loops use multimetric scoring and the user
+            want to refit according to a callable, the latter must be passed in a dictionary {score: callable} with
+            score being the score name with which the score on different sets will be calculated
     refit_outer: boolean (default=True)
         Refit an estimator using the whole dataset in two steps:
-        1. Hyperparameter optimization with a gridsearch cross-validation (same parameter as outer CV).
+        1. Hyperparameter optimization with a random search cross-validation (same parameter as outer CV).
         2. Refit an estimator using the best found parameters on the whole dataset.
     return_train_score: boolean (default=False)
         If False, the cross_validation results attribute will not include training scores.
@@ -787,18 +800,16 @@ class BayesianSearchNestedCV(NestedCV):
         Value to assign to the score if an error occurs in estimator fitting. If set to ‘raise’, the error is raised.
         If a numeric value is given, FitFailedWarning is raised. This parameter does not affect the refit step, which
         will always raise the error.
-    refit_inner: boolean, string or callable (default=True)
+    refit_inner: boolean, string (default=True)
         Refit an estimator using the best found parameters on the whole outer training set
-        Argument will be given to GridsearchCV that select hyperparameters in the inner loop :
+        Argument will be given to search method that select hyperparameters in the inner loop :
             For multiple metric evaluation, this needs to be a string denoting the scorer that would be used to find the
-            best parameters for refitting the estimator at the end. Where there are considerations other than maximum
-            score in choosing a best estimator, refit can be set to a function which returns the selected best_index_
-            given cv_results_. In that case, the best_estimator_ and best_parameters_ will be set according to the
-            returned best_index_.The refitted estimator is made available at the best_estimator_ attribute and permits
+            best parameters for refitting the estimator at the end. Callable is not supported with BayesSearch.
+            The refitted estimator is made available at the best_estimator_ attribute and permits
             using predict directly on this GridSearchCV instance.
     refit_outer: boolean (default=True)
         Refit an estimator using the whole dataset in two steps:
-        1. Hyperparameter optimization with a gridsearch cross-validation (same parameter as outer CV).
+        1. Hyperparameter optimization with a Bayesian search cross-validation (same parameter as outer CV).
         2. Refit an estimator using the best found parameters on the whole dataset.
     return_train_score: boolean (default=False)
         If False, the cross_validation results attribute will not include training scores.
