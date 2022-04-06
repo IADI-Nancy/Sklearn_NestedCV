@@ -249,37 +249,17 @@ class NestedCV(BaseEstimator):
                 inner_model.set_params(memory=memory)
                 pipeline_inner = self._get_inner_param_optimizer(inner_model, inner_cv)
                 pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
-                self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
-                                           'mean_test_score': pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric],
-                                           'std_test_score': pipeline_inner.cv_results_['std_test_%s' % self.refit_metric]})
-                if self.return_train_score:
-                    self.inner_results[-1].update({'mean_train_score': pipeline_inner.cv_results_['mean_train_%s' % self.refit_metric],
-                                                   'std_train_score': pipeline_inner.cv_results_['std_train_%s' % self.refit_metric]})
+                self.append_scores(pipeline_inner, X_train_outer, X_test_outer, y_train_outer, y_test_outer,
+                                   train_outer_index, test_outer_index)
                 if self.verbose > 2:
                     for params_dict in pipeline_inner.cv_results_['params']:
                         mean_test_score = pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric]
                         index_params_dic = pipeline_inner.cv_results_['params'].index(params_dict)
                         print('\t\t Params: {0}, Mean inner score: {1}'.format(params_dict, mean_test_score[index_params_dic]))
-                self.outer_results['best_inner_score'].append(pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric][pipeline_inner.best_index_])  # Because best_score doesn't exist if refit_inner is a callable
-                self.outer_results['best_inner_params'].append(pipeline_inner.best_params_)
-                if self.return_train_score:
-                    self.outer_results['outer_train_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_train_outer, y_train_outer))
-                self.outer_results['outer_test_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_test_outer, y_test_outer))
                 if self.verbose > 1:
                     print('\nResults for outer fold:\nBest inner parameters was: {0}'.format(self.outer_results['best_inner_params'][-1]))
                     print('Outer score: {0}'.format(self.outer_results['outer_test_score'][-1]))
                     print('Inner score: {0}'.format(self.outer_results['best_inner_score'][-1]))
-                self.outer_pred['train'].append(train_outer_index)
-                self.outer_pred['test'].append(test_outer_index)
-                self.outer_pred['model'].append(pipeline_inner.best_estimator_)
-                self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
-                self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
-                if hasattr(pipeline_inner.best_estimator_[-1], 'predict_proba'):
-                    self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
-                    self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
-                if hasattr(pipeline_inner.best_estimator_[-1], 'decision_function'):
-                    self.outer_pred['decision_function_train'].append(pipeline_inner.best_estimator_.decision_function(X_train_outer))
-                    self.outer_pred['decision_function_test'].append(pipeline_inner.best_estimator_.decision_function(X_test_outer))
                 memory.clear(warn=False)
         if self.verbose > 0:
             print('\nOverall outer score (mean +/- std): {0} +/- {1}'.format(np.mean(self.outer_results['outer_test_score']),
@@ -305,6 +285,34 @@ class NestedCV(BaseEstimator):
             memory.clear(warn=False)
             rmtree(location)
         return self
+
+    def append_scores(self, pipeline_inner, X_train_outer, X_test_outer, y_train_outer, y_test_outer, train_outer_index,
+                      test_outer_index):
+        self.inner_results.append({'params': pipeline_inner.cv_results_['params'],
+                                   'mean_test_score': pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric],
+                                   'std_test_score': pipeline_inner.cv_results_['std_test_%s' % self.refit_metric]})
+        if self.return_train_score:
+            self.inner_results[-1].update({'mean_train_score': pipeline_inner.cv_results_['mean_train_%s' % self.refit_metric],
+                                           'std_train_score': pipeline_inner.cv_results_['std_train_%s' % self.refit_metric]})
+        self.outer_results['best_inner_score'].append(pipeline_inner.cv_results_['mean_test_%s' % self.refit_metric][pipeline_inner.best_index_])  # Because best_score doesn't exist if refit_inner is a callable
+        self.outer_results['best_inner_params'].append(pipeline_inner.best_params_)
+        if self.return_train_score:
+            self.outer_results['outer_train_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_train_outer, y_train_outer))
+        self.outer_results['outer_test_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_test_outer, y_test_outer))
+        self.outer_pred['train'].append(train_outer_index)
+        self.outer_pred['test'].append(test_outer_index)
+        self.outer_pred['model'].append(pipeline_inner.best_estimator_)
+        self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
+        self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
+        if hasattr(pipeline_inner.best_estimator_[-1], 'predict_proba'):
+            self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
+            self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
+        if hasattr(pipeline_inner.best_estimator_[-1], 'decision_function'):
+            self.outer_pred['decision_function_train'].append(
+                pipeline_inner.best_estimator_.decision_function(X_train_outer))
+            self.outer_pred['decision_function_test'].append(
+                pipeline_inner.best_estimator_.decision_function(X_test_outer))
+
 
     def score(self, X, y=None):
         """Returns the score on the given data, if the estimator has been refit.
