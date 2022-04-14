@@ -300,37 +300,6 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
             feature_selector.TentativeRoughFix()
         self.accepted_features_index = [int(_) for _ in feature_selector.accepted]
 
-    def stability_selection(self, X, y):
-        """
-        Wrapper around stability-selection package which is based on the stability selection feature selection
-        algorithm [1]. Bootstrap can be performed using complementary pairs subsampling [2].
-        https://github.com/scikit-learn-contrib/stability-selection
-        [1]: Meinshausen, N. and Buhlmann, P., 2010. Stability selection. Journal of the Royal Statistical Society:
-        Series B (Statistical Methodology), 72(4), pp.417-473.
-        [2] Shah, R.D. and Samworth, R.J., 2013. Variable selection with error control: another look at stability
-        selection. Journal of the Royal Statistical Society: Series B (Statistical Methodology), 75(1), pp.55-80.
-        """
-        init_params_dic = {'base_estimator': self.fit_params.get('base_estimator', LogisticRegression(penalty='l1',
-                                                                                                      solver='liblinear')),
-                           'lambda_name': self.fit_params.get('lambda_name', 'C'),
-                           'lambda_grid': self.fit_params.get('lambda_grid', np.logspace(-5, -2, 25)),
-                           'n_bootstrap_iterations': self.fit_params.get('n_bootstrap_iterations', self.n_bsamples),
-                           'sample_fraction': self.fit_params.get('sample_fraction', 0.5),
-                           'threshold': self.fit_params.get('threshold', 0.6),
-                           'bootstrap_func': self.fit_params.get('bootstrap_func', 'subsample'),
-                           'bootstrap_threshold': self.fit_params.get('bootstrap_threshold', None),
-                           'verbose': self.fit_params.get('verbose', 0),
-                           'n_jobs': self.fit_params.get('n_jobs', 1),
-                           'pre_dispatch': self.fit_params.get('pre_dispatch', '2*n_jobs'),
-                           'random_state': self.fit_params.get('random_state', self.random_state)}
-        fit_params = self.fit_params.copy()
-        for init_params in init_params_dic:
-            if init_params in fit_params:
-                fit_params.pop(init_params)
-        feature_selector = StabilitySelection(**init_params_dic)
-        feature_selector.fit(X, y)
-        self.accepted_features_index = feature_selector.get_support(indices=True)
-
     # === Ranking aggregation methods ===
     # Importance score method :
     # A comparative study of machine learning methods for time-to-event survival data for radiomics risk modelling
