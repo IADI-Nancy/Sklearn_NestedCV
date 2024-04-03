@@ -1,5 +1,5 @@
 The code provided herein allow to reproduce the results found in the following article:  
-Zaragori T, Oster J, Roch V, Hossu G, Chawki MB, Grignon R, et al. 18F-FDopa PET for the non-invasive prediction of glioma molecular parameters: a radiomics study (accepted in Journal of Nuclear Medicine)
+Zaragori T, Oster J, Roch V, Hossu G, Chawki MB, Grignon R, et al. 18F-FDopa PET for the non-invasive prediction of glioma molecular parameters: a radiomics study. Journal of Nuclear Medicine, https://doi.org/10.2967/jnumed.120.261545
 
 # How to use
 Assuming a directory structure similar to this directory:

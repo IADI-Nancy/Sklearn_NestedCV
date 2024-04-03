@@ -12,6 +12,7 @@ In a context of radiomics studies with data coming from different devices, some 
 - scipy
 - imblearn
 - skfeature
+- scikit-optimize
 
 R will be installed automatically in your conda/anaconda environment with rpy2 by using `conda install -c r rpy2`.
 `xml` package from R should be installed manually using `conda install -c r r-xml`
