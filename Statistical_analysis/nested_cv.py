@@ -99,6 +99,7 @@ class NestedCV(BaseEstimator):
                 step_object = pipeline_dic[step](**kwargs)
             pipeline_steps.append((step, step_object))
         if self.imblearn_pipeline:
+            # TODO : detect automatically if imblearn pipeline should be used
             return imbPipeline(pipeline_steps)
         else:
             return skPipeline(pipeline_steps)
@@ -164,6 +165,8 @@ class NestedCV(BaseEstimator):
             self.refit_metric = 'score'
             if self.refit_inner is True:
                 self.refit_inner = 'score'
+            # TODO : what if refit inner = False ? we need to have access to best_estimator_ for outer loop so we have
+            #  to refit
 
     def fit(self, X, y=None, groups=None, **fit_params):
         """
@@ -182,27 +185,31 @@ class NestedCV(BaseEstimator):
             instance (e.g., :class:`~sklearn.model_selection.GroupKFold`).
         **fit_params : dict of string -> object
             Parameters passed to the ``fit`` method of the estimator
+
         Returns
-            -------
-            It will not return directly the values, but it's accessable from the class object it self.
-            You should be able to access:
-            outer_pred
-                 A dictionary to access the train indexes, the test indexes and the model  of each outer loop
-                 for further post-processing. Keys are respectively train, test and model with values being
-                 lists of length outer_cv.get_n_splits().
-            outer_results
-                A dictionary to access the outer test scores, the best inner scores, the best inner parameters (and
-                outer_train_scores if return_train_score == True). Keys are respectively outer_test_score,
-                best_inner_score, best_inner_params (and outer_train_score) with values being lists of length
-                outer_cv.get_n_splits().
-            inner_results
-                A list of dictionary of length outer_cv.get_n_splits().
-                Each dictionary having params, mean_test_score, std_test_score (and mean_train_score, std_train_score
-                if return_train_score == True) as keys and values being the list of params or associated results
-                over the inner loops.
-            best_estimator_
-                Model when refit on the whole dataset with hyperparameter optimized by GridSearch CV.
-                Available only if refit == True.
+        -------
+        self : object
+        Instance of fitted estimator.
+
+        Attributes
+        ----------
+        outer_pred
+             A dictionary to access the train indexes, the test indexes and the model  of each outer loop
+             for further post-processing. Keys are respectively train, test and model with values being
+             lists of length outer_cv.get_n_splits().
+        outer_results
+            A dictionary to access the outer test scores, the best inner scores, the best inner parameters (and
+            outer_train_scores if return_train_score == True). Keys are respectively outer_test_score,
+            best_inner_score, best_inner_params (and outer_train_score) with values being lists of length
+            outer_cv.get_n_splits().
+        inner_results
+            A list of dictionary of length outer_cv.get_n_splits().
+            Each dictionary having params, mean_test_score, std_test_score (and mean_train_score, std_train_score
+            if return_train_score == True) as keys and values being the list of params or associated results
+            over the inner loops.
+        best_estimator_
+            Model when refit on the whole dataset with hyperparameter optimized by GridSearch CV.
+            Available only if refit == True.
         """
         X, y = self._check_X_Y(X, y)
 
