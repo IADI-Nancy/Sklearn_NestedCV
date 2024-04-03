@@ -119,6 +119,7 @@ class DimensionalityReduction(BaseEstimator):
         labels = cut_tree(Z, height=1 - self.threshold).reshape(-1)
         self.cluster_labels = labels
         feature_coefficient = np.zeros(np.size(labels))
+        # TODO : introduce non linear dimensionality reduction on each cluster
         if self.cluster_reduction == 'mean':
             corr_matrix = pd.DataFrame(X).corr(method=self.corr_metric).to_numpy()
             for n_k in range(np.amax(labels) + 1):
