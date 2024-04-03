@@ -21,6 +21,7 @@ def _get_score_names(cv_results, *, kind="test"):
             for key in cv_results.keys()
             if key.startswith(prefix)}
 
+
 class BayesSearchCV(BaseSearchCV):
     """Bayesian optimization over hyper parameters.
 
