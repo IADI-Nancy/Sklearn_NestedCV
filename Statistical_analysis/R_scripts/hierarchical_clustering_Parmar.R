@@ -6,8 +6,7 @@ clust.medoid = function(i, distmat, clusters)
   names(which.min(rowSums( distmat[ind, ind] )))
 }
 
-hierarchical_clustering_parmar = function(data, max_k = 20, threshold = 0.1, corr_metric = 'spearman',
-                                          cluster_reduction='mean', seed=1)
+hierarchical_clustering_parmar = function(data, max_k = 20, threshold = 0.1, seed=1)
 {
   set.seed(1)
   #=== Installing missing packages ===
@@ -25,7 +24,7 @@ hierarchical_clustering_parmar = function(data, max_k = 20, threshold = 0.1, cor
   data <- as.matrix(sapply(data, as.numeric))
   #=== Run consensus hierarchical clustering ===
   results <- ConsensusClusterPlus(data, maxK = max_k, reps = 10000, pItem = 0.8, pFeature = 1,
-                                  clusterAlg = "hc", distance = corr_metric, plot = FALSE,
+                                  clusterAlg = "hc", distance = "spearman", plot = FALSE, 
                                   innerLinkage = 'ward.D2', finalLinkage = 'ward.D2', seed = seed)
   icl <- calcICL(results, plot=FALSE)
   clusterConsensus <- as.data.frame(icl[['clusterConsensus']])
@@ -58,28 +57,12 @@ hierarchical_clustering_parmar = function(data, max_k = 20, threshold = 0.1, cor
   consensus_class_best_k <- as.data.frame(results[[best_k]][['consensusClass']])
   colnames(consensus_class_best_k) <- c('clusterNumber')
   # === Feature coefficient for each cluster ===
+  dissimilarity_matrix <- 1 - cor(data, method = "spearman")
   consensus_class_best_k$featureCoefficient <- 0
-  if(cluster_reduction == 'medoid')
+  for (n_k in 1:best_k)
   {
-    dissimilarity_matrix <- 1 - cor(data, method = corr_metric)
-    for (n_k in 1:best_k)
-    {
-      cluster_medoids <- clust.medoid(n_k, dissimilarity_matrix, consensus_class_best_k[, 1])
-      consensus_class_best_k[cluster_medoids, 2] <- 1
-    }
-  }
-  else
-  {
-    correlation_matrix <- cor(data,method="spearman")
-    for (n_k in 1:best_k)
-    {
-      n <- length(which(consensus_class_best_k$clusterNumber == n_k))
-      if (n != 1)
-      {
-        cluster_corr_matrix <- correlation_matrix[consensus_class_best_k$clusterNumber == n_k, consensus_class_best_k$clusterNumber == n_k]
-        consensus_class_best_k$featureCoefficient[consensus_class_best_k$clusterNumber == n_k] <- ifelse(test = cluster_corr_matrix[, 1] < 0, -1/n, 1/n)
-      }else{consensus_class_best_k$featureCoefficient[consensus_class_best_k$clusterNumber == n_k] <- 1}
-    }
+    cluster_medoids <- clust.medoid(n_k, dissimilarity_matrix, consensus_class_best_k[, 1])
+    consensus_class_best_k[cluster_medoids, 2] <- 1
   }
   return(consensus_class_best_k)
 }
