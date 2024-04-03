@@ -13,11 +13,6 @@ from sklearn.exceptions import NotFittedError
 from sklearn.utils.validation import check_is_fitted
 from BorutaShap import BorutaShap
 from abc import abstractmethod
-try:
-    from stability_selection import StabilitySelection
-except ModuleNotFoundError:
-    raise ModuleNotFoundError('sklearn.externals.joblib was deprecated in v0.21 of scikit-learn. Must import directly'
-                              'joblib. See PR https://github.com/scikit-learn-contrib/stability-selection/pull/34')
 
 
 class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
@@ -65,6 +60,23 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
            retention.
        """
 
+    @abstractmethod
+    def fit(self, X, y):
+        """
+        A method to fit feature selection.
+        Parameters
+        ----------
+        X : pandas dataframe or array-like of shape (n_samples, n_features)
+            Training vector, where n_samples is the number of samples and
+            n_features is the number of features.
+        y : pandas dataframe or array-like of shape (n_samples,)
+            Target vector relative to X.
+        Returns
+        -------
+        self : object
+        Instance of fitted estimator.
+        """
+
     def transform(self, X):
         """Select the n_selected_features best features to create a new dataset.
             Parameters
@@ -103,7 +115,7 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
                  A list of features indexes sorted by ranks. ranking_index[0] returns the index of the best selected
                  feature according to scoring/ranking function
         """
-        return self.fit(X, y, **fit_params).transform(X)
+        return self.fit(X, y).transform(X)
 
 
 class FilterFeatureSelection(FeatureSelection):
