@@ -4,15 +4,12 @@ import pandas as pd
 from scipy.stats import kruskal, pearsonr, spearmanr, rankdata
 from sklearn.metrics import roc_curve, auc
 from itertools import combinations
-# TODO : not maintain anymore. Get mrmr from other package ? https://pypi.org/project/mrmr-selection/ ? 
-from skfeature.function.information_theoretical_based.MRMR import mrmr
 from sklearn.feature_selection import mutual_info_classif
-from sklearn.utils import resample
-from sklearn.base import BaseEstimator, MetaEstimatorMixin
-from sklearn.feature_selection._base import SelectorMixin
-from sklearn.exceptions import NotFittedError
-from sklearn.utils.validation import check_is_fitted
-from BorutaShap import BorutaShap
+from sklearn.base import BaseEstimator, MetaEstimatorMixin, clone
+from sklearn.feature_selection import SelectorMixin
+from sklearn.utils.validation import validate_data, column_or_1d, check_is_fitted
+from sklearn.utils.multiclass import check_classification_targets, type_of_target
+from sklearn.utils import check_random_state
 from abc import abstractmethod, ABC
 # TODO : other methods such as relief ? 
 
@@ -52,18 +49,22 @@ class FeatureSelection(SelectorMixin, BaseEstimator, ABC):
 
 class FilterFeatureSelection(FeatureSelection):
     """A general class to handle feature selection according to a scoring/ranking method. Bootstrap is implemented
-    to ensure stability in feature selection process
+    to ensure stability in feature selection process. Only works for classification purposes.
     Parameters
     ----------
     method: str or callable
         Method used to score/rank features. Either str or callable
         If str inbuild function named as str is called, must be one of following:
-            'wlcx_score': score of kruskall wallis test
+            'wlcx_score' or 'kruskal_score': score of kruskall wallis test
             'auc_roc': scoring with area under the roc curve
             'pearson_corr': scoring with pearson correlation coefficient between features and labels
             'spearman_corr': scoring with spearman correlation coefficient between features and labels
-            'mi': scoring with mutual information between features and labels
+            'mi_classif': scoring with mutual information between features and labels
             'mrmr': ranking according to Minimum redundancy Maximum relevance algorithm
+        pearson_corr and spearman_corr require a numerical target.
+        For categorical labels, encode y before fitting the selector.
+        For multiclass targets, the numerical encoding imposes an ordering
+        and should only be used when that ordering is scientifically meaningful.
         If callable method must take (feature_array,label_array) as arguments and return either the score or the rank
         associated with each feature in the same order as features are in feature_array
     bootstrap: boolean (default=False)
@@ -76,7 +77,7 @@ class FilterFeatureSelection(FeatureSelection):
     ranking_aggregation: str or callable (default=None)
         Method used to aggregate rank of bootstrap samples. Either str or callable
         If str inbuild function named as str is called, must be one of following:'enhanced_borda', 'borda',
-        'importance_score', 'mean', 'stability_selection', 'exponential_weighting'
+        'importance_score', 'mean', 'stability_selection_aggregation', 'exponential_weighting'
         If callable method must take ((bootstrap_ranks, n_selected_features) as arguments and return the
         aggregate rank associated with each feature in the same order as features are in feature_array
     ranking_done: boolean (default=False)
@@ -84,23 +85,21 @@ class FilterFeatureSelection(FeatureSelection):
     score_indicator_lower: boolean (default=None)
         Choose whether lower score correspond to higher rank for the rank calculation or higher score is better,
         `True` means lower score is better. Determined automatically for inbuild functions
-    classification: boolean (default=True)
-        Define whether the current problem is a classification problem.
     random_state: int, RandomState instance or None (default=None)
         Controls the randomness of the estimator.
     """
-    scoring_methods = {'name': ['auc_roc', 'pearson_corr', 'spearman_corr', 'mi', 'wlcx_score'],
-                       'score_indicator_lower': [False, False, False, False, False]}
-    ranking_methods = ['mrmr']
+    _SCORING_METHODS = {"pearson_corr": False, "spearman_corr": False, 
+                        "auc_roc": False, "mi_classif": False, "wlcx_score": False,
+                        "kruskal_score": False}
+    _RANKING_METHODS = {'mrmr'}
     # TODO: implement more inbuild functions like multivariate selection algorithm
     #  (see skfeature : https://github.com/jundongl/scikit-feature)
     # TODO : implement t-test, chisquare
-    ranking_aggregation_methods = ['enhanced_borda', 'borda', 'importance_score', 'mean',
-                                   'stability_selection_aggregation', 'exponential_weighting']
+    _AGGREGATION_METHODS = {'enhanced_borda', 'borda', 'importance_score', 'mean', 
+                            'stability_selection_aggregation', 'exponential_weighting'}
 
-    def __init__(self, method='mrmr', bootstrap=False, n_bsamples=100, n_selected_features=20,
-                 ranking_aggregation=None, ranking_done=False, score_indicator_lower=None,
-                 classification=True, random_state=None):
+    def __init__(self, method='auc_roc', bootstrap=False, n_bsamples=100, n_selected_features=20,
+                 ranking_aggregation=None, ranking_done=False, score_indicator_lower=None, random_state=None):
         self.method = method
         self.ranking_done = ranking_done
         self.score_indicator_lower = score_indicator_lower
@@ -109,82 +108,99 @@ class FilterFeatureSelection(FeatureSelection):
         self.n_bsamples = n_bsamples
         self.n_selected_features = n_selected_features
         self.ranking_aggregation = ranking_aggregation
-        self.classification = classification
         self.random_state = random_state
-
-    def _get_fs_func(self):
+        
+    def _validate_parameters(self):
+        if not isinstance(self.bootstrap, bool):
+            raise TypeError("bootstrap must be a boolean.")
+        if (not isinstance(self.n_bsamples, numbers.Integral) or isinstance(self.n_bsamples, bool) or self.n_bsamples < 1):
+            raise ValueError("n_bsamples must be a positive integer.")
+        if not isinstance(self.ranking_done, bool):
+            raise TypeError("ranking_done must be a boolean.")
+        if (self.score_indicator_lower is not None and not isinstance(self.score_indicator_lower, bool)):
+            raise TypeError("score_indicator_lower must be a boolean or None.")
+        if (self.bootstrap and self.ranking_aggregation is None):
+            raise ValueError("ranking_aggregation must be provided when bootstrap=True.")
+        if (not self.bootstrap and self.ranking_aggregation is not None):
+            raise ValueError("ranking_aggregation can only be used when bootstrap=True.")
+        check_random_state(self.random_state)
+    
+    def _resolve_selection_method(self):
         if callable(self.method):
-            return self.method
-        elif isinstance(self.method, str):
-            method_name = self.method.lower()
-            if method_name not in (self.scoring_methods['name'] + self.ranking_methods):
-                raise ValueError('If string method must be one of : %s. '
-                                 '%s was passed' % (str(self.scoring_methods['name'] + self.ranking_methods),
-                                                    method_name))
-            if method_name in self.ranking_methods:
-                self.ranking_done = True
-            elif method_name in self.scoring_methods['name']:
-                self.ranking_done = False
-                self.score_indicator_lower = self.scoring_methods['score_indicator_lower'][self.scoring_methods['name'].index(self.method)]
-            else:
-                raise ValueError('If string method must be one of : %s. '
-                                 '%s was passed' % (str(self.scoring_methods['name'] + self.ranking_methods),
-                                                    method_name))
-            return getattr(self, method_name)
-        else:
-            raise TypeError('method argument must be a callable or a string')
+            return self.method, self.ranking_done, self.score_indicator_lower
+        
+        if not isinstance(self.method, str):
+            raise TypeError("method must be a string or a callable.")
 
-    def _get_aggregation_method(self):
-        if not callable(self.ranking_aggregation) and not isinstance(self.ranking_aggregation, str):
+        method_name = self.method.lower()
+        if method_name in self._RANKING_METHODS:
+            return getattr(self, method_name), True, None
+
+        if method_name in self._SCORING_METHODS:
+            lower_is_better = self._SCORING_METHODS[method_name]
+            return getattr(self, method_name), False, lower_is_better
+        
+        valid_methods = sorted(set(self._SCORING_METHODS) | set(self._RANKING_METHODS))
+        raise ValueError(f"Unknown method {self.method!r}. Expected one of {valid_methods}.")
+
+    def _resolve_aggregation_method(self):
+        if callable(self.ranking_aggregation):
+            return self.ranking_aggregation
+
+        if not isinstance(self.ranking_aggregation, str):
             raise TypeError('ranking_aggregation option must be a callable or a string')
-        else:
-            if isinstance(self.ranking_aggregation, str):
-                ranking_aggregation_name = self.ranking_aggregation.lower()
-                if self.ranking_aggregation not in self.ranking_aggregation_methods:
-                    raise ValueError('If string ranking_aggregation must be one of : {0}. '
-                                     '%s was passed'.format(str(self.ranking_aggregation_methods),
-                                                            ranking_aggregation_name))
-                return getattr(FilterFeatureSelection, self.ranking_aggregation)
 
+        method_name = self.ranking_aggregation.lower()
+        if method_name not in self._AGGREGATION_METHODS:
+            raise ValueError(f"Unknown ranking_aggregation {self.ranking_aggregation!r}. "
+                             f"Expected one of  {sorted(self._AGGREGATION_METHODS)}.")
+        return getattr(self, method_name)
+      
+    def _resolve_n_selected_features(self, n_features):
+        if self.n_selected_features is None:
+            return n_features
+
+        if not isinstance(self.n_selected_features, numbers.Integral) or isinstance(self.n_selected_features, bool):
+            raise TypeError("n_selected_features must be an integer or None.")
+
+        if not 1 <= self.n_selected_features <= n_features:
+            raise ValueError("n_selected_features must be between 1 and the number of input features.")
+        return int(self.n_selected_features)
+
+    def _generate_bootstrap_indices(self, y):
+        rng = check_random_state(self.random_state)        
+        return np.asarray([self._bootstrap_indices(y, rng) for _ in range(self.n_bsamples)], dtype=int)
+    
     @staticmethod
-    def _check_n_selected_feature(X, n_selected_features):
-        if not isinstance(n_selected_features, numbers.Integral) and n_selected_features is not None:
-            raise TypeError('n_selected_feature must be int or None')
-        else:
-            if n_selected_features is None:
-                n_selected_features = X.shape[1]
-            else:
-                n_selected_features = n_selected_features
-            return n_selected_features
-
-    def _get_bsamples_index(self, y):
-        bsamples_index = []
-        n = 0
-        while len(bsamples_index) < self.n_bsamples:
-            bootstrap_sample = resample(range(self.n_samples), random_state=n)
-            # Ensure all classes are present in bootstrap sample.
-            if len(np.unique(y[bootstrap_sample])) == self.n_classes:
-                bsamples_index.append(bootstrap_sample)
-            n += 1
-        bsamples_index = np.array(bsamples_index)
-        return bsamples_index
+    def _bootstrap_indices(y, rng):
+        class_indices = [np.flatnonzero(y == label) for label in np.unique(y)]        
+        sampled = [rng.choice(indices, size=len(indices), replace=True) for indices in class_indices]
+        indices = np.concatenate(sampled)
+        rng.shuffle(indices)
+        return indices
 
     def _get_support_mask(self):
-        mask = np.zeros(self.n_features, dtype=bool)
+        check_is_fitted(self, "accepted_features_index_")
+        mask = np.zeros(self.n_features_in_, dtype=bool)
         mask[self.accepted_features_index_] = True
         return mask
 
     # === Scoring methods ===
     @staticmethod
-    def wlcx_score(X, y):
+    def kruskal_score(X, y):
         n_samples, n_features = X.shape
         score = np.zeros(n_features)
         labels = np.unique(y)
         for i in range(n_features):
             X_by_label = [X[:, i][y == _] for _ in labels]
-            statistic, pvalue = kruskal(*X_by_label)
-            score[i] = statistic
+            try:
+                statistic, pvalue = kruskal(*X_by_label)
+            except ValueError:
+                statistic = 0
+            score[i] = statistic if np.isfinite(statistic) else 0
         return score
+    
+    wlcx_score = kruskal_score
 
     @staticmethod
     def auc_roc(X, y):
@@ -197,12 +213,12 @@ class FilterFeatureSelection(FeatureSelection):
                 control_median = np.median(X[:, i][y == labels[0]])
                 case_median = np.median(X[:, i][y == labels[1]])
                 if case_median > control_median:
-                    positive_label = 1
+                    positive_label = labels[1]
                 else:
-                    positive_label = 0
+                    positive_label = labels[0]
                 fpr, tpr, thresholds = roc_curve(y, X[:, i], pos_label=positive_label)
                 roc_auc = auc(fpr, tpr)
-                score[i] = roc_auc
+                score[i] = roc_auc if np.isfinite(roc_auc) else 0.5
         else:
             # Adapted from roc_auc_score for multi_class labels
             # See sklearn.metrics._base_average_multiclass_ovo_score
@@ -235,7 +251,7 @@ class FilterFeatureSelection(FeatureSelection):
         score = np.zeros(n_features)
         for i in range(n_features):
             correlation, pvalue = pearsonr(X[:, i], y)
-            score[i] = correlation
+            score[i] = abs(correlation) if np.isfinite(correlation) else 0.0
         return score
 
     @staticmethod
@@ -244,16 +260,22 @@ class FilterFeatureSelection(FeatureSelection):
         score = np.zeros(n_features)
         for i in range(n_features):
             correlation, pvalue = spearmanr(X[:, i], y)
-            score[i] = correlation
+            score[i] = abs(correlation) if np.isfinite(correlation) else 0.0
         return score
 
-    def mi(self, X, y):
+    def mi_classif(self, X, y):
         score = mutual_info_classif(X, y, random_state=self.random_state)
         return score
 
     # === Ranking methods ===
     @staticmethod
     def mrmr(X, y):
+        try:
+            # TODO : not maintain anymore. Get mrmr from other package ? https://pypi.org/project/mrmr-selection/ ? 
+            from skfeature.function.information_theoretical_based.MRMR import mrmr
+        except ImportError as exc:
+            raise ImportError("The 'mrmr' method requires scikit-feature.") from exc
+        
         n_samples, n_features = X.shape
         rank_index, _, _ = mrmr(X, y, n_selected_features=n_features)
         ranks = np.array([list(rank_index).index(_) + 1 for _ in range(len(rank_index))])
@@ -325,47 +347,58 @@ class FilterFeatureSelection(FeatureSelection):
         self : object
         Instance of fitted estimator.
         """
-        X, y = self._check_X_Y(X, y)
-        self.n_samples, self.n_features = X.shape
-        self.n_classes = len(np.unique(y))
-        fs_func = self._get_fs_func()
-        if self.ranking_aggregation is not None:
-            aggregation_method = self._get_aggregation_method()
-        self.n_selected_features = self._check_n_selected_feature(X, self.n_selected_features)
+        self._validate_parameters()
+        X, y = validate_data(self, X=X, y=y, reset=True, ensure_2d=True, dtype="numeric", ensure_all_finite=True)
+        y = column_or_1d(y)
+        check_classification_targets(y)
+        self.classes_ = np.unique(y)
+        if self.classes_.size < 2:
+            raise ValueError("y must contain at least two classes.")
+        fs_func, ranking_done, score_indicator_lower = self._resolve_selection_method()            
+        self.n_selected_features_ = self._resolve_n_selected_features(self.n_features_in_)
         if self.bootstrap:
-            if self.ranking_aggregation is None:
-                raise ValueError('ranking_aggregation option must be given if bootstrap is True')
-            bsamples_index = self._get_bsamples_index(y)
-            if self.ranking_done:
-                bootstrap_ranks = np.array([fs_func(X[_, :], y[_]) for _ in bsamples_index])
+            aggregation_method = self._resolve_aggregation_method()
+            bsamples_index = self._generate_bootstrap_indices(y)
+            if ranking_done:
+                bootstrap_ranks = np.array([self._validate_method_output(fs_func(X[_, :], y[_]), self.n_features_in_) for _ in bsamples_index])
             else:
-                if self.score_indicator_lower is None:
-                    raise ValueError(
-                        'score_indicator_lower option must be given if a user scoring function is used')
-                boostrap_scores = np.array([fs_func(X[_, :], y[_]) for _ in bsamples_index])
-                if not self.score_indicator_lower:
-                    boostrap_scores *= -1
-                bootstrap_ranks = np.array([rankdata(_) for _ in boostrap_scores])
-            bootstrap_ranks_aggregated = aggregation_method(bootstrap_ranks, self.n_selected_features)
-            ranking_index = [list(bootstrap_ranks_aggregated).index(_) for _ in
-                             sorted(bootstrap_ranks_aggregated)]
+                if score_indicator_lower is None:
+                    raise ValueError('score_indicator_lower option must be given if a user scoring function is used')
+                bootstrap_scores = np.array([self._validate_method_output(fs_func(X[_, :], y[_]), self.n_features_in_) for _ in bsamples_index])
+                if not score_indicator_lower:
+                    bootstrap_scores *= -1
+                bootstrap_ranks = np.array([rankdata(_, method="ordinal") for _ in bootstrap_scores])
+            bootstrap_ranks_aggregated = self._validate_method_output(aggregation_method(bootstrap_ranks, self.n_selected_features_), self.n_features_in_)
+            self.feature_ranks_ = bootstrap_ranks_aggregated
+            self.ranking_index_ = np.argsort(bootstrap_ranks_aggregated, kind="stable")
         else:
-            if self.ranking_done:
-                ranks = fs_func(X, y)
+            if ranking_done:
+                ranks = self._validate_method_output(fs_func(X, y), self.n_features_in_)
             else:
-                if self.score_indicator_lower is None:
-                    raise ValueError(
-                        'score_indicator_lower option must be given if a user scoring function is used')
-                score = fs_func(X, y)
-                if not self.score_indicator_lower:
+                if score_indicator_lower is None:
+                    raise ValueError('score_indicator_lower option must be given if a user scoring function is used')
+                score = self._validate_method_output(fs_func(X, y), self.n_features_in_)
+                if not score_indicator_lower:
                     score *= -1
                 ranks = rankdata(score, method='ordinal')
-            ranking_index = [list(ranks).index(_) for _ in sorted(ranks)]
-        self.accepted_features_index_ = ranking_index[:self.n_selected_features]
+            self.feature_ranks_ = ranks
+            self.ranking_index_ = np.argsort(ranks, kind="stable")
+        self.accepted_features_index_ = np.asarray(self.ranking_index_[:self.n_selected_features_])
         return self
+    
+    @staticmethod
+    def _validate_method_output(values, n_features):
+        values = np.asarray(values, dtype=float)
+        if values.ndim != 1:
+            raise ValueError("The feature-selection method must return a one-dimensional array.")
+        if values.shape[0] != n_features:
+            raise ValueError("The method must return one value per feature.")
+        if not np.all(np.isfinite(values)):
+            raise ValueError("The method returned non-finite values.")
+        return values
 
 
-class BorutaShapFeatureSelection(FeatureSelection):
+class BorutaShapFeatureSelection(FeatureSelection, MetaEstimatorMixin):
     """
     Wrapper around BorutaShap package which is based on Boruta feature selection algorithm [1] with the addition
     of feature importance assessed using SHAP values [2]. Tree based algorithm are used to allow the use of
@@ -429,9 +462,37 @@ class BorutaShapFeatureSelection(FeatureSelection):
         self.normalize = normalize
         self.verbose = verbose
         self.stratify = stratify
+        
+    def _validate_parameters(self) -> None:
+        if not isinstance(self.classification, bool):
+            raise TypeError("classification must be a boolean.")
+
+        if (not isinstance(self.percentile, numbers.Real) or isinstance(self.percentile, bool) or not 0 <= self.percentile <= 100):
+            raise ValueError("percentile must be in [0, 100].")
+
+        if (not isinstance(self.pvalue, numbers.Real) or isinstance(self.pvalue, bool) or not 0 < self.pvalue < 1):
+            raise ValueError("pvalue must be in (0, 1).")
+
+        if (not isinstance(self.n_trials, numbers.Integral) or isinstance(self.n_trials, bool) or self.n_trials < 1):
+            raise ValueError("n_trials must be a positive integer.")
+
+        if not isinstance(self.sample, bool):
+            raise TypeError("sample must be a boolean.")
+
+        if not isinstance(self.normalize, bool):
+            raise TypeError("normalize must be a boolean.")
+
+        if not isinstance(self.verbose, bool):
+            raise TypeError("verbose must be a boolean.")
+
+        if self.train_or_test not in {"train", "test"}:
+            raise ValueError("train_or_test must be either 'train' or 'test'.")
+
+        check_random_state(self.random_state)
 
     def _get_support_mask(self):
-        mask = np.zeros(self.n_features, dtype=bool)
+        check_is_fitted(self, "accepted_features_index_")
+        mask = np.zeros(self.n_features_in_, dtype=bool)
         mask[self.accepted_features_index_] = True
         return mask
 
@@ -450,17 +511,31 @@ class BorutaShapFeatureSelection(FeatureSelection):
         self : object
         Instance of fitted estimator.
         """
-        X, y = self._check_X_Y(X, y)
-        self.n_samples, self.n_features = X.shape
-        self.n_classes = len(np.unique(y))
-        feature_selector = BorutaShap(model=self.model, importance_measure=self.importance_measure,
+        try:
+            from BorutaShap import BorutaShap
+        except ImportError as exc:
+            raise ImportError("The 'BorutaShapFeatureSelection' class requires BorutaShap.") from exc
+        self._validate_parameters()
+        X, y = validate_data(self, X=X, y=y, reset=True, ensure_2d=True, dtype="numeric", ensure_all_finite=True)
+        y = column_or_1d(y)
+        if self.classification:
+            check_classification_targets(y)
+            self.classes_ = np.unique(y)
+            if self.classes_.size < 2:
+                raise ValueError("y must contain at least two classes.")
+        else:
+            if type_of_target(y) not in {"continuous"}:
+                raise ValueError("This method requires a continuous regression target.")
+        model = None if self.model is None else clone(self.model)
+        self.feature_selector_ = BorutaShap(model=model, importance_measure=self.importance_measure,
                                       classification=self.classification, percentile=self.percentile, pvalue=self.pvalue)
         X = pd.DataFrame(X, columns=[str(_) for _ in range(X.shape[1])])
-        feature_selector.fit(X, y, n_trials=self.n_trials, random_state=self.random_state, sample=self.sample,
+        self.feature_selector_.fit(X, y, n_trials=self.n_trials, random_state=self.random_state, sample=self.sample,
                              train_or_test=self.train_or_test, normalize=self.normalize, verbose=self.verbose,
                              stratify=self.stratify)
-        if feature_selector.tentative:
+        if self.feature_selector_.tentative:
             # Might get some undecided features after fit
             # Method which compares the median values of the max shadow feature and the undecided features
-            feature_selector.TentativeRoughFix()
-        self.accepted_features_index_ = [int(_) for _ in feature_selector.accepted]
+            self.feature_selector_ .TentativeRoughFix()
+        self.accepted_features_index_ = [int(_) for _ in self.feature_selector_.accepted]
+        return self
