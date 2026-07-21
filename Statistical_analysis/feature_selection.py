@@ -4,6 +4,7 @@ import pandas as pd
 from scipy.stats import kruskal, pearsonr, spearmanr, rankdata
 from sklearn.metrics import roc_curve, auc
 from itertools import combinations
+# TODO : not maintain anymore. Get mrmr from other package ? https://pypi.org/project/mrmr-selection/ ? 
 from skfeature.function.information_theoretical_based.MRMR import mrmr
 from sklearn.feature_selection import mutual_info_classif
 from sklearn.utils import resample
@@ -12,53 +13,24 @@ from sklearn.feature_selection._base import SelectorMixin
 from sklearn.exceptions import NotFittedError
 from sklearn.utils.validation import check_is_fitted
 from BorutaShap import BorutaShap
-from abc import abstractmethod
+from abc import abstractmethod, ABC
+# TODO : other methods such as relief ? 
 
-
-class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
+class FeatureSelection(SelectorMixin, BaseEstimator, ABC):
     """
     Abstract class for feature selection
      """
-    @staticmethod
-    def _check_X_Y(X, y=None):
-        # Check X
-        if not isinstance(X, (list, tuple, np.ndarray)):
-            if isinstance(X, pd.DataFrame) or isinstance(X, pd.Series):
-                X = X.to_numpy()
-            else:
-                raise TypeError('X array must be an array like or pandas Dataframe/Series')
-        else:
-            X = np.array(X)
-        if len(X.shape) != 2:
-            raise ValueError('X array must 2D')
-        if y is not None:
-            # Check y
-            if not isinstance(y, (list, tuple, np.ndarray)):
-                if isinstance(y, pd.DataFrame) or isinstance(y, pd.Series):
-                    y = y.to_numpy()
-                else:
-                    raise TypeError('y array must be an array like or pandas Dataframe/Series')
-            else:
-                y = np.array(y)
-            if len(y.shape) != 1:
-                if len(y.shape) == 2 and y.shape[1] == 1:
-                    y.reshape(-1)
-                else:
-                    raise ValueError('y array must be 1D or 2D with second dimension equal to 1')
-            if len(np.unique(y)) <= 1:
-                raise ValueError('y array must have at least 2 classes')
-        return X, y
-
     @abstractmethod
     def _get_support_mask(self):
         """
-       Get the boolean mask indicating which features are selected
-       Returns
-       -------
-       support : boolean array of shape [# input features]
-           An element is True iff its corresponding feature is selected for
-           retention.
-       """
+        Get the boolean mask indicating which features are selected
+        Returns
+        -------
+        support : boolean array of shape [# input features]
+            An element is True iff its corresponding feature is selected for
+            retention.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def fit(self, X, y):
@@ -76,47 +48,7 @@ class FeatureSelection(MetaEstimatorMixin, SelectorMixin, BaseEstimator):
         self : object
         Instance of fitted estimator.
         """
-
-    def transform(self, X):
-        """Select the n_selected_features best features to create a new dataset.
-            Parameters
-            ----------
-            X : pandas dataframe or array-like of shape (n_samples, n_features)
-                Training vector, where n_samples is the number of samples and
-                n_features is the number of features.
-            Returns
-            -------
-            n_selected_features
-                 array of shape (n_samples, n_selected_features) containing the selected features
-        """
-
-        X, _ = self._check_X_Y(X, None)
-        if check_is_fitted(self):
-            self.selected_features = super(FeatureSelection, self).transform(X)
-            return self.selected_features
-        else:
-            raise NotFittedError('Fit method must be used before calling transform')
-
-    def fit_transform(self, X, y=None, **fit_params):
-        """A method to fit feature selection and reduce X to selected features.
-            Parameters
-            ----------
-            X : pandas dataframe or array-like of shape (n_samples, n_features)
-                Training vector, where n_samples is the number of samples and
-                n_features is the number of features.
-            y : pandas dataframe or array-like of shape (n_samples,)
-                Target vector relative to X.
-            Returns
-            -------
-            n_selected_features
-                array of shape (n_samples, n_selected_features) containing the selected features
-            You should be able to access as class attribute to:
-            ranking_index
-                 A list of features indexes sorted by ranks. ranking_index[0] returns the index of the best selected
-                 feature according to scoring/ranking function
-        """
-        return self.fit(X, y).transform(X)
-
+        raise NotImplementedError
 
 class FilterFeatureSelection(FeatureSelection):
     """A general class to handle feature selection according to a scoring/ranking method. Bootstrap is implemented
