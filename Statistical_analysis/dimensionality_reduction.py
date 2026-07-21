@@ -1,217 +1,321 @@
-import pandas as pd
+"""Scikit-learn compatible dimensionality reduction by correlation clustering.
+
+This module implements the hierarchical feature clustering described by
+Leger et al., with an optional bootstrap consensus step for small datasets.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from numbers import Integral, Real
+from typing import Any, Literal
+
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.exceptions import NotFittedError
-from scipy.cluster.hierarchy import linkage, cut_tree
+import pandas as pd
+from scipy.cluster.hierarchy import cut_tree, linkage
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial.distance import squareform
+from sklearn.base import BaseEstimator, TransformerMixin, clone
+from sklearn.utils import check_random_state
+from sklearn.utils.validation import validate_data, check_is_fitted, check_consistent_length
 
 
-class DimensionalityReduction(BaseEstimator):
-    """A general class to handle dimensionality reduction.
-        Parameters
-        ----------
-        method: str or transform
-            Method used to compute dimensionality reduction. Either str or callable
-            If str inbuild function named as str is called, must be one of following:
-                'hierarchical_clust_parmar': Consensus Clustering with hierarchical clustering as described in :
-                    Radiomic feature clusters and Prognostic Signatures specific for Lung and Head & Neck cancer.
-                    Parmar et al., Scientific Reports, 2015
-                'hierarchical_clust_leger': Hierarchical clustering as described in :
-                    A comparative study of machine learning methods for time-to-event survival data for
-                    radiomics risk modelling. Leger et al., Scientific Reports, 2017
-            If transform method must inherit from TransformMixin (like sklearn transformers) or have a fit + a transform
-            method that will be called successively with the latter returning the reduce dataset.
-            Ex :
-                str: method = 'hierarchical_clust_leger'
-                transform: method = sklearn.decomposition.PCA(n_components=0.95, solver='svd_full')
-        corr_metric: str
-            Correlation metric used to compute distance between features
-        threshold: float
-            Correlation threshold used assign clusters to feature. Tree will be cut at a height of 1 - threshold
-        cluster_reduction: str
-            Method used to combine features in the same cluster. Currently implemented : mean and medoid
+class DimensionalityReduction(TransformerMixin, BaseEstimator, ABC):
     """
-    dr_methods = ['hierarchical_clust_parmar', 'hierarchical_clust_leger']
-    cluster_reduction_methods = ['mean', 'medoid']
+    Abstract base class for custom dimensionality-reduction transformers.
 
-    def __init__(self, method='hierarchical_clust_leger', corr_metric='spearman', threshold=0.9, cluster_reduction='mean'):
-        self.method = method
-        self.corr_metric = corr_metric
-        self.threshold = threshold
-        self.cluster_reduction = cluster_reduction
-        self.is_reduced = False
-        self.is_fitted = False
+    Subclasses must implement:
+    - _fit_reducer
+    - _transform_reducer
+    - _get_feature_names_out_reducer
+    """
 
-    @staticmethod
-    def _check_X_Y(X, y):
-        # Check X
-        if not isinstance(X, (list, tuple, np.ndarray)):
-            if isinstance(X, pd.DataFrame) or isinstance(X, pd.Series):
-                X = X.to_numpy()
-            else:
-                raise TypeError('X array must be an array like or pandas Dataframe/Series')
-        else:
-            X = np.array(X)
-        if len(X.shape) != 2:
-            raise ValueError('X array must 2D')
-        # Check y
-        if y is not None:
-            if not isinstance(y, (list, tuple, np.ndarray)):
-                if isinstance(y, pd.DataFrame) or isinstance(y, pd.Series):
-                    y = y.to_numpy()
-                else:
-                    raise TypeError('y array must be an array like or pandas Dataframe/Series')
-            else:
-                y = np.array(y)
-            if len(y.shape) != 1:
-                if len(y.shape) == 2 and y.shape[1] == 1:
-                    y.reshape(-1)
-                else:
-                    raise ValueError('y array must be 1D or 2D with second dimension equal to 1')
-            if len(np.unique(y)) <= 1:
-                raise ValueError('y array must have at least 2 classes')
-        return X, y
-
-    def _get_dr_func(self):
-        if isinstance(self.method, TransformerMixin) or (hasattr(self.method, 'fit') and hasattr(self.method, 'transform')):
-            return self.method
-        elif isinstance(self.method, str):
-            method_name = self.method.lower()
-            if method_name not in self.dr_methods:
-                raise ValueError('If string method must be one of : {0}. '
-                                 '%s was passed'.format(str(self.dr_methods), self.method))
-            return getattr(self, self.method)
-        else:
-            raise TypeError('method argument must be a callable or a string')
-
-    @staticmethod
-    def _get_medoid(n_k, distance_matrix, cluster_labels):
-        df_distance_matrix = pd.DataFrame(distance_matrix)
-        cluster_distance_matrix = df_distance_matrix.loc[cluster_labels == n_k, cluster_labels == n_k]
-        return cluster_distance_matrix.sum(axis=0).idxmin()
-
-    def hierarchical_clust_leger(self, X, y=None):
-        """
-        Hierarchical clustering as described in :
-            A comparative study of machine learning methods for time-to-event survival data for
-            radiomics risk modelling. Leger et al., Scientific Reports, 2017
-        """
-        # df = pd.DataFrame(X)
-        # r_df = pandas2ri.py2ri(df)
-        # cwd = os.path.dirname(sys.argv[0])
-        # r.setwd(cwd)
-        # r.source('./Statistical_analysis/R_scripts/hierarchical_clustering_Leger.R')
-        # r_dr_results = r.hierarchical_clustering_leger(r_df)
-        # R_object_dict = {}
-        # keys = r_dr_results.names
-        # for i in range(len(keys)):
-        #     R_object_dict[keys[i]] = np.array(r_dr_results[i])
-        # dr_results = pd.DataFrame(R_object_dict).to_numpy()
-        # nb_cluster = np.amax(dr_results[:, 0]).astype(int)
-        # coefficient_matrix = np.zeros((dr_results.shape[0], nb_cluster))  # Shape of (n_features, nb cluster)
-        # for i in range(nb_cluster):
-        #     coefficient_matrix[:, i] = np.where(dr_results[:, 0] == i + 1, dr_results[:, 1], 0)
-        # coefficient_matrix = coefficient_matrix.T
-
-        dissimilarity_matrix = 1 - np.abs(pd.DataFrame(X).corr(method=self.corr_metric).to_numpy())
-        distance_matrix = squareform(dissimilarity_matrix)
-        Z = linkage(distance_matrix, method='complete')
-        labels = cut_tree(Z, height=1 - self.threshold).reshape(-1)
-        self.cluster_labels = labels
-        feature_coefficient = np.zeros(np.size(labels))
-        # TODO : introduce non linear dimensionality reduction on each cluster
-        if self.cluster_reduction == 'mean':
-            corr_matrix = pd.DataFrame(X).corr(method=self.corr_metric).to_numpy()
-            for n_k in range(np.amax(labels) + 1):
-                n = np.sum(labels == n_k)
-                if n != 1:
-                    cluster_corr_matrix = corr_matrix[labels == n_k, :][:, labels == n_k]
-                    feature_coefficient[labels == n_k] = np.where(cluster_corr_matrix[:, 0] < 0, -1 / n, 1 / n)
-                else:
-                    feature_coefficient[labels == n_k] = 1
-        elif self.cluster_reduction == 'medoid':
-            for n_k in range(np.amax(labels) + 1):
-                medoid_idx = self._get_medoid(n_k, dissimilarity_matrix, labels)
-                feature_coefficient[medoid_idx] = 1
-        else:
-            raise ValueError('cluster_reduction must be one of : %s. '
-                             '%s was passed' % (self.cluster_reduction_methods, self.cluster_reduction))
-        coefficient_matrix = np.zeros((X.shape[1], np.amax(labels) + 1))  # Shape of (n_features, nb cluster)
-        for i in range(np.amax(labels) + 1):
-            coefficient_matrix[:, i] = np.where(labels == i, feature_coefficient, 0)
-        coefficient_matrix = coefficient_matrix.T
-
-        return coefficient_matrix
-
-    # === Applying dimensionnality reduction ===
     def fit(self, X, y=None):
-        """Fit dimensionality reduction.
-            Parameters
-            ----------
-            X : pandas dataframe or array-like of shape (n_samples, n_features)
-                Training vector, where n_samples is the number of samples and
-                n_features is the number of features.
-            y : optional, pandas dataframe or array-like of shape (n_samples,) (default = None)
-                Target vector relative to X.
-            Returns
-            -------
-            It will not return directly the values, but it's accessable from the class object it self.
-            You should be able to access:
-            coefficient_matrix
-                 array of shape (n_components, n_features) with for each features the coefficient associated with
-                 each components of reduced features dataset
         """
-        X, y = self._check_X_Y(X, y)
-        self.dr_func = self._get_dr_func()
+        Fit the dimensionality-reduction method.
 
-        # Test whether the method has a fit function like sklearn classes
-        if hasattr(self.dr_func, 'fit'):
-            self.dr_func.fit(X, y)
-        else:
-            self.coefficient_matrix = self.dr_func(X, y=y)
-        self.is_fitted = True
+        The base class validates the input data and delegates the actual
+        algorithm to `_fit_reducer`.
+        """
+        X_validated  = validate_data(self, X=X, reset=True, ensure_2d=True, dtype="numeric", ensure_all_finite=True)
+        if y is not None:
+            check_consistent_length(X, y)
+        self._fit_reducer(X_validated, y)
+        self._dimensionality_reduction_fitted_ = True
+        return self
 
     def transform(self, X):
-        """Reduce X dataset to create a new dataset.
-            Parameters
-            ----------
-            X : pandas dataframe or array-like of shape (n_samples, n_features)
-                Training vector, where n_samples is the number of samples and
-                n_features is the number of features.
-            Returns
-            -------
-            reduced_features
-                 array of shape (n_samples, n_components) containing the reduced dataset
         """
-        X, _ = self._check_X_Y(X, None)
-        # Test whether the method has a transform function like sklearn classes
-        if self.is_fitted:
-            if hasattr(self.dr_func, 'transform'):
-                self.reduced_features = self.dr_func.transform(X)
-            else:
-                self.reduced_features = np.array([self.coefficient_matrix.dot(X[_, :]) for _ in range(X.shape[0])])
-            self.is_reduced = True
-            return self.reduced_features
-        else:
-            raise NotFittedError('Fit method must be used before calling transform')
+        Transform input data using the fitted dimensionality reducer.
+        """
+        check_is_fitted(self, "_dimensionality_reduction_fitted_")
+        X_validated = validate_data(self, X=X, reset=False, ensure_2d=True, dtype="numeric", ensure_all_finite=True)
+        X_reduced = self._transform_reducer(X_validated)
+        X_reduced = np.asarray(X_reduced)
+        
+        if X_reduced.ndim != 2:
+            raise RuntimeError("_transform_reducer must return a two-dimensional array.")
+        if X_reduced.shape[0] != X_validated.shape[0]:
+            raise RuntimeError("_transform_reducer changed the number of samples.")
 
-    def fit_transform(self, X, y=None):
-        """Fit dimensionality reduction and reduce X dataset to create a new dataset
-            Parameters
-            ----------
-            X : pandas dataframe or array-like of shape (n_samples, n_features)
-                Training vector, where n_samples is the number of samples and
-                n_features is the number of features.
-            y : optional, pandas dataframe or array-like of shape (n_samples,) (default = None)
-                Target vector relative to X.
-            Returns
-            -------
-            reduced_features
-                 array of shape (n_samples, n_components) containing the reduced dataset
-            You should be able to access as class attribute to:
-            coefficient_matrix
-                 array of shape (n_components, n_features) with for each features the coefficient associated with
-                 each components of reduced features dataset
-            """
-        self.fit(X, y)
-        return self.transform(X)
+        return X_reduced
+    
+    def _validate_input_features(self, input_features=None) -> np.ndarray:
+        """
+        Resolve and validate input feature names.
+        """
+        if input_features is None:
+            if hasattr(self, "feature_names_in_"):
+                return np.asarray(self.feature_names_in_, dtype=object)
+            return np.asarray([f"x{i}" for i in range(self.n_features_in_)], dtype=object)
+
+        input_features = np.asarray(input_features, dtype=object)
+
+        if input_features.ndim != 1:
+            raise ValueError("input_features must be one-dimensional.")
+
+        if len(input_features) != self.n_features_in_:
+            raise ValueError("input_features must contain one name per input feature.")
+
+        if hasattr(self, "feature_names_in_") and not np.array_equal(input_features, self.feature_names_in_):
+                raise ValueError("input_features does not match feature_names_in_.")
+        return input_features
+
+    def get_feature_names_out(self, input_features=None):
+        """
+        Return names for transformed features.
+        """
+        check_is_fitted(self, "_dimensionality_reduction_fitted_")
+
+        input_features = self._validate_input_features(input_features)
+        output_features = self._get_feature_names_out_reducer(input_features)
+        output_features = np.asarray(output_features, dtype=object)
+
+        if output_features.ndim != 1:
+            raise RuntimeError("_get_feature_names_out_reducer must return a one-dimensional array.")
+        return output_features
+    
+    @abstractmethod
+    def _fit_reducer(self, X: np.ndarray, y=None) -> None:
+        """
+        Fit the method-specific reduction model.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def _transform_reducer(self, X: np.ndarray) -> np.ndarray:
+        """
+        Apply the fitted method-specific transformation.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def _get_feature_names_out_reducer(self, input_features: np.ndarray) -> np.ndarray:
+        """
+        Output feature names.
+        """
+        raise NotImplementedError
+
+
+class HierarchicalClusteringLeger(DimensionalityReduction):
+    """Reduce correlated features using hierarchical clustering of Leger et al. (Sci Rep, 2017).
+
+    Parameters
+    ----------
+    corr_metric : {"pearson", "spearman", "kendall"}, default="spearman"
+        Correlation used between features. Clustering uses ``1 - abs(corr)``.
+
+    threshold : float in (0, 1], default=0.9
+        Minimum absolute correlation used to define feature clusters.
+
+    cluster_reduction : {"mean", "medoid"}, default="mean"
+        How each cluster is represented. ``"mean"`` computes a sign-aligned
+        average. ``"medoid"`` retains the most central original feature.
+
+    bootstrap : bool, default=False
+        Whether to estimate clusters by bootstrap consensus clustering.
+
+    n_bootstraps : int, default=500
+        Number of bootstrap samples. Used only when ``bootstrap=True``.
+
+    consensus_threshold : float in [0, 1], default=0.5
+        Minimum co-association probability used for final consensus clusters.
+
+    consensus_method : {"connected_components", "complete_linkage"},
+            default="connected_components"
+        ``"connected_components"`` reproduces the graph-based implementation
+        used in version B. It can merge features by transitive chaining.
+        ``"complete_linkage"`` is stricter: every pair in a final cluster must
+        satisfy the consensus threshold.
+
+    random_state : int, RandomState instance or None, default=None
+        Controls bootstrap sampling.
+
+    Attributes
+    ----------
+    coefficient_matrix_ : ndarray of shape (n_output_features, n_features_in_)
+        Linear transformation used by the built-in clustering method.
+
+    cluster_labels_ : ndarray of shape (n_features_in_,)
+        Final cluster assignment of each input feature.
+
+    consensus_matrix_ : ndarray of shape (n_features_in_, n_features_in_)
+        Co-association probabilities. Present only when ``bootstrap=True``.
+
+    medoid_indices_ : ndarray of shape (n_output_features,)
+        Index of the medoid feature in every final cluster.
+    """
+    def __init__(
+        self,
+        *,
+        corr_metric: Literal["pearson", "spearman", "kendall"] = "spearman",
+        correlation_threshold: float = 0.9,
+        cluster_reduction: Literal["mean", "medoid"] = "medoid",
+        bootstrap: bool = False,
+        n_bootstraps: int = 500,
+        consensus_threshold: float = 0.5,
+        consensus_method: Literal["connected_components", "complete_linkage"] = "connected_components",
+        random_state: int | np.random.RandomState | None = None,
+    ):
+        self.corr_metric = corr_metric
+        self.correlation_threshold = correlation_threshold
+        self.cluster_reduction = cluster_reduction
+        self.bootstrap = bootstrap
+        self.n_bootstraps = n_bootstraps
+        self.consensus_threshold = consensus_threshold
+        self.consensus_method = consensus_method
+        self.random_state = random_state
+
+    def _validate_parameters(self) -> None:
+        if self.corr_metric not in {"pearson", "spearman", "kendall"}:
+            raise ValueError("corr_metric must be one of {'pearson', 'spearman', 'kendall'}.")
+        if not isinstance(self.correlation_threshold, Real) or isinstance(self.correlation_threshold, bool) or not 0 < self.correlation_threshold <= 1:
+            raise ValueError("correlation_threshold must be a real number in (0, 1].")
+        if self.cluster_reduction not in {"mean", "medoid"}:
+            raise ValueError("cluster_reduction must be either 'mean' or 'medoid'.")
+        if not isinstance(self.bootstrap, (bool, np.bool_)):
+            raise TypeError("bootstrap must be a boolean.")
+        if not isinstance(self.n_bootstraps, Integral) or isinstance(self.n_bootstraps, (bool, np.bool_)) or self.n_bootstraps < 1:
+            raise ValueError("n_bootstraps must be a positive integer.")
+        if not isinstance(self.consensus_threshold, Real) or isinstance(self.consensus_threshold, bool) or not 0 <= self.consensus_threshold <= 1:
+            raise ValueError("consensus_threshold must be a real number in [0, 1].")
+        if self.consensus_method not in {"connected_components", "complete_linkage"}:
+            raise ValueError("consensus_method must be either 'connected_components' or 'complete_linkage'.")
+        check_random_state(self.random_state)
+    
+    def _correlation_matrix(self, X: np.ndarray) -> np.ndarray:
+        corr = pd.DataFrame(X).corr(method=self.corr_metric).to_numpy(dtype=float)
+        # NaN correlations arise for zero-variance features, including bootstrap
+        # samples where an otherwise varying feature can become constant.
+        corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+        np.fill_diagonal(corr, 1.0)
+        return np.clip(corr, -1.0, 1.0)
+    
+    @staticmethod
+    def _dissimilarity_from_correlation(correlation_matrix: np.ndarray) -> np.ndarray:
+        dissimilarity = 1.0 - np.abs(correlation_matrix)
+        # Ensure dissimilarity matrix is symmetric
+        dissimilarity = (dissimilarity + dissimilarity.T) / 2.0
+        np.fill_diagonal(dissimilarity, 0.0)
+        return np.clip(dissimilarity, 0.0, 1.0)
+
+    def _labels_from_dissimilarity(self, dissimilarity: np.ndarray) -> np.ndarray:
+        n_features = dissimilarity.shape[0]
+        if n_features == 1:
+            return np.zeros(1, dtype=int)
+        condensed = squareform(dissimilarity, checks=False)
+        tree = linkage(condensed, method="complete")
+        return cut_tree(tree, height=1.0 - self.correlation_threshold).ravel().astype(int)
+
+    def _single_clustering(self, X: np.ndarray) -> np.ndarray:
+        corr = self._correlation_matrix(X)
+        dissimilarity = self._dissimilarity_from_correlation(corr)
+        return self._labels_from_dissimilarity(dissimilarity)
+
+    def _bootstrap_consensus(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        rng = check_random_state(self.random_state)
+        n_samples, n_features = X.shape
+        coassociation_counts = np.zeros((n_features, n_features), dtype=np.uint32)
+
+        for _ in range(self.n_bootstraps):
+            row_indices = rng.randint(0, n_samples, size=n_samples)
+            labels = self._single_clustering(X[row_indices])
+            coassociation_counts += labels[:, None] == labels[None, :]
+
+        consensus = coassociation_counts.astype(float) / float(self.n_bootstraps)
+        np.fill_diagonal(consensus, 1.0)
+
+        if self.consensus_method == "connected_components":
+            # >= is the natural interpretation of a minimum threshold.
+            graph = consensus >= self.consensus_threshold
+            _, labels = connected_components(graph.astype(np.uint8), directed=False, return_labels=True)
+            return labels.astype(int), consensus
+
+        consensus_dissimilarity = 1.0 - consensus
+        np.fill_diagonal(consensus_dissimilarity, 0.0)
+        if n_features == 1:
+            labels = np.zeros(1, dtype=int)
+        else:
+            tree = linkage(squareform(consensus_dissimilarity, checks=False), method="complete",)
+            labels = cut_tree(tree, height=1.0 - self.consensus_threshold).ravel().astype(int)
+        return labels, consensus
+
+    @staticmethod
+    def _medoid_index(cluster_indices: np.ndarray, dissimilarity: np.ndarray) -> int:
+        within_cluster = dissimilarity[np.ix_(cluster_indices, cluster_indices)]
+        return int(cluster_indices[np.argmin(within_cluster.sum(axis=1))])
+
+    def _build_coefficient_matrix(self, corr: np.ndarray, dissimilarity: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        coefficients = np.zeros((len(self.unique_cluster_labels_), self.cluster_labels_.size), dtype=float)
+        medoids = np.empty(len(self.unique_cluster_labels_), dtype=int)
+
+        for output_index, label in enumerate(self.unique_cluster_labels_):
+            cluster_indices = np.flatnonzero(self.cluster_labels_ == label)
+            medoid = self._medoid_index(cluster_indices, dissimilarity)
+            medoids[output_index] = medoid
+
+            if self.cluster_reduction == "medoid":
+                coefficients[output_index, medoid] = 1.0
+                continue
+
+            signs = np.sign(corr[cluster_indices, medoid])
+            signs[signs == 0] = 1.0
+            coefficients[output_index, cluster_indices] = (signs / cluster_indices.size)
+
+        return coefficients, medoids
+    
+    def _clear_fitted_attributes(self):
+        for name in (
+            "coefficient_matrix_",
+            "cluster_labels_",
+            "consensus_matrix_",
+            "medoid_indices_",
+            "n_features_out_",
+            "transformer_",
+        ):
+            if hasattr(self, name):
+                delattr(self, name)
+                
+    def _fit_reducer(self, X, y=None):
+        self._validate_parameters()
+        self._clear_fitted_attributes()
+        corr = self._correlation_matrix(X)
+        dissimilarity = self._dissimilarity_from_correlation(corr)
+
+        if self.bootstrap:
+            labels, consensus = self._bootstrap_consensus(X)
+            self.consensus_matrix_ = consensus
+        else:
+            labels = self._labels_from_dissimilarity(dissimilarity)
+
+        self.cluster_labels_ = labels
+        self.unique_cluster_labels_ = np.unique(self.cluster_labels_)
+        self.coefficient_matrix_, self.medoid_indices_ = self._build_coefficient_matrix(corr, dissimilarity)
+        
+    def _transform_reducer(self, X: np.ndarray) -> np.ndarray:
+        return X @ self.coefficient_matrix_.T
+    
+    def _get_feature_names_out_reducer(self, input_features: np.ndarray) -> np.ndarray:
+        if self.cluster_reduction == "medoid":
+            return input_features[self.medoid_indices_]
+        return np.asarray([f"cluster_{cluster_index}" for cluster_index in self.unique_cluster_labels_], dtype=object)
