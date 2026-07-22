@@ -127,9 +127,9 @@ class FilterFeatureSelection(SelectorMixin, BaseEstimator):
         if not isinstance(self.n_selected_features, numbers.Integral) or isinstance(self.n_selected_features, bool):
             raise TypeError("n_selected_features must be an integer or None.")
 
-        if not 1 <= self.n_selected_features <= n_features:
-            raise ValueError("n_selected_features must be between 1 and the number of input features.")
-        return int(self.n_selected_features)
+        if self.n_selected_features < 1:
+            raise ValueError("n_selected_features must be at least 1.")
+        return min(int(self.n_selected_features), n_features)
 
     def _generate_bootstrap_indices(self, y):
         rng = check_random_state(self.random_state)        
