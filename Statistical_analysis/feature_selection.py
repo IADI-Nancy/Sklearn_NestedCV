@@ -10,44 +10,8 @@ from sklearn.feature_selection import SelectorMixin
 from sklearn.utils.validation import validate_data, column_or_1d, check_is_fitted
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
 from sklearn.utils import check_random_state
-from abc import abstractmethod, ABC
-# TODO : other methods such as relief ? 
 
-class FeatureSelection(SelectorMixin, BaseEstimator, ABC):
-    """
-    Abstract class for feature selection
-     """
-    @abstractmethod
-    def _get_support_mask(self):
-        """
-        Get the boolean mask indicating which features are selected
-        Returns
-        -------
-        support : boolean array of shape [# input features]
-            An element is True iff its corresponding feature is selected for
-            retention.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def fit(self, X, y):
-        """
-        A method to fit feature selection.
-        Parameters
-        ----------
-        X : pandas dataframe or array-like of shape (n_samples, n_features)
-            Training vector, where n_samples is the number of samples and
-            n_features is the number of features.
-        y : pandas dataframe or array-like of shape (n_samples,)
-            Target vector relative to X.
-        Returns
-        -------
-        self : object
-        Instance of fitted estimator.
-        """
-        raise NotImplementedError
-
-class FilterFeatureSelection(FeatureSelection):
+class FilterFeatureSelection(SelectorMixin, BaseEstimator):
     """A general class to handle feature selection according to a scoring/ranking method. Bootstrap is implemented
     to ensure stability in feature selection process. Only works for classification purposes.
     Parameters
@@ -271,7 +235,8 @@ class FilterFeatureSelection(FeatureSelection):
     @staticmethod
     def mrmr(X, y):
         try:
-            # TODO : not maintain anymore. Get mrmr from other package ? https://pypi.org/project/mrmr-selection/ ? 
+            # TODO : not maintain anymore. Only work with old python version.
+            # Get mrmr from other package ? https://pypi.org/project/mrmr-selection/ ? 
             from skfeature.function.information_theoretical_based.MRMR import mrmr
         except ImportError as exc:
             raise ImportError("The 'mrmr' method requires scikit-feature.") from exc
@@ -398,7 +363,7 @@ class FilterFeatureSelection(FeatureSelection):
         return values
 
 
-class BorutaShapFeatureSelection(FeatureSelection, MetaEstimatorMixin):
+class BorutaShapFeatureSelection(SelectorMixin, BaseEstimator):
     """
     Wrapper around BorutaShap package which is based on Boruta feature selection algorithm [1] with the addition
     of feature importance assessed using SHAP values [2]. Tree based algorithm are used to allow the use of
