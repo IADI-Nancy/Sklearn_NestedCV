@@ -23,7 +23,87 @@ except ImportError:
 
 class NestedCV(BaseEstimator):
     """
-    Abstract base class to handle Nested Cross Validation
+    Base class implementing nested cross-validation orchestration.
+    
+        Subclasses provide the concrete inner and final hyperparameter-search
+        objects.
+    
+        Parameters
+        ----------
+        pipeline_dic : mapping of str to estimator specification
+            Ordered mapping used to construct the pipeline. Keys are pipeline step
+            names. Values may be an estimator class, a callable factory returning
+            an estimator, an already instantiated scikit-learn compatible
+            ``BaseEstimator``, or the string ``"passthrough"``.
+    
+            Intermediate steps of a standard scikit-learn pipeline must implement
+            ``fit`` and ``transform``. When ``imblearn_pipeline=True``, compatible
+            imbalanced-learn samplers are also accepted. The final step must
+            implement ``fit``. Steps are chained in mapping insertion order.
+    
+            Step names have no special meaning. In particular,
+            ``"DimensionalityReduction"`` and ``"FeatureSelection"`` are ordinary
+            step names; their values must directly specify the estimator to use.
+        params_dic : mapping or list of mappings
+            Hyperparameter search space grouped by pipeline step. Each outer key
+            must match a step name from ``pipeline_dic`` and each value must be a
+            mapping from unprefixed estimator parameter names to candidate values
+            accepted by the selected search method. Parameters are internally
+            converted to scikit-learn's ``step_name__parameter_name`` format.
+            A list of mappings defines separate search spaces.
+        outer_cv : int, CV splitter or iterable, default=5
+            Cross-validation strategy used to estimate generalization performance.
+            Integer values are passed to :func:`sklearn.model_selection.check_cv`.
+        inner_cv : int, CV splitter or iterable, default=5
+            Cross-validation strategy used by the hyperparameter search within
+            each outer-training set.
+        n_jobs : int or None, default=None
+            Number of parallel jobs used by the search object. ``None`` means one
+            job unless a joblib backend is active; ``-1`` uses all processors.
+        pre_dispatch : int or str, default='2*n_jobs'
+            Number of jobs dispatched ahead of execution by the search object.
+        imblearn_pipeline : bool, default=False
+            If True, construct an :class:`imblearn.pipeline.Pipeline`; otherwise
+            construct an :class:`sklearn.pipeline.Pipeline`. Set this to True when
+            the pipeline contains a sampler such as SMOTE.
+        pipeline_options : mapping of str to mapping or None, default=None
+            Constructor arguments or parameter overrides for pipeline steps. Each
+            key must match a step in ``pipeline_dic``. For estimator classes or
+            factories, options are passed at construction. For estimator
+            instances, the instance is cloned and options are applied with
+            ``set_params``. Options are not allowed for ``"passthrough"`` steps.
+        metric : str, callable, mapping or sequence, default='roc_auc'
+            Scoring specification accepted by scikit-learn. With multiple metrics,
+            ``refit_inner`` determines which metric is used to select the model
+            evaluated in the outer loop.
+        verbose : int, default=1
+            Verbosity level. Larger values print more information.
+        refit_outer : bool, default=True
+            If True, after nested-CV performance estimation, run an additional
+            hyperparameter search on the complete dataset using ``outer_cv`` and
+            fit the selected pipeline on all samples. This final search does not
+            alter the outer-fold performance estimate. It creates
+            ``best_estimator_``, ``best_params_``, ``best_index_`` and
+            ``cv_results_`` (and ``best_score_`` when available).
+        error_score : 'raise' or numeric, default=np.nan
+            Value assigned by the underlying search object when a candidate fit
+            fails. ``'raise'`` propagates the exception.
+        refit_inner : True, str or callable selection rule, default=True
+            Rule used by the inner search to select and refit the best candidate on
+            each complete outer-training set. ``False`` is not supported because a
+            fitted estimator is required for evaluation on the outer test set.
+            For multi-metric scoring, provide a scorer name. Grid and randomized
+            search also accept the library's ``{scorer_name: callable}`` form.
+        return_train_score : bool, default=False
+            Whether inner-search results also contain training scores.
+        memory : None, 'temporary', path-like or joblib.Memory, default=None
+            Pipeline caching configuration. ``None`` disables caching.
+            ``'temporary'`` creates one temporary shared cache for each inner
+            search and for the optional final full-data search, then removes it
+            when that search ends. A path-like value or ``joblib.Memory`` object is
+            normalized with :func:`sklearn.utils.validation.check_memory` and is
+            managed by the caller. Only intermediate pipeline transformers are
+            cached; the final estimator is never cached
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options=None, metric='roc_auc', verbose=1, refit_outer=True,
@@ -44,46 +124,46 @@ class NestedCV(BaseEstimator):
         self.return_train_score = return_train_score
         self.memory = memory
 
-    def _check_pipeline_dic(self, pipeline_dic):
-        if not isinstance(pipeline_dic, Mapping):
+    def _check_pipeline_dic(self):
+        if not isinstance(self.pipeline_dic, Mapping):
             raise TypeError("pipeline_dic must be a mapping from step names "
             "to estimator classes, estimator instances, or "
             "'passthrough'.")
-        if len(pipeline_dic) == 0:
+        if len(self.pipeline_dic) == 0:
             raise ValueError("pipeline_dic must contain at least one step.")
-        for step in pipeline_dic.keys():
+        for step in self.pipeline_dic.keys():
             if not isinstance(step, str):
                 raise TypeError("Every pipeline step name must be a string.")
             if not step:
                 raise ValueError("Pipeline step names cannot be empty.")
             if "__" in step:
                     raise ValueError(f"Pipeline step name {step!r} must not contain '__'.")
-            is_estimator = isinstance(pipeline_dic[step], BaseEstimator)
-            is_factory = callable(pipeline_dic[step])
-            is_special_value = isinstance(pipeline_dic[step], str) and pipeline_dic[step] == "passthrough"
+            is_estimator = isinstance(self.pipeline_dic[step], BaseEstimator)
+            is_factory = callable(self.pipeline_dic[step])
+            is_special_value = isinstance(self.pipeline_dic[step], str) and self.pipeline_dic[step] == "passthrough"
             if not (is_estimator or is_factory or is_special_value ):
                 raise TypeError(
                     f"Pipeline step {step!r} must be an "
                     "estimator instance, an estimator class or "
                     "factory, or 'passthrough'. Got "
-                    f"{type(pipeline_dic[step]).__name__}."
+                    f"{type(self.pipeline_dic[step]).__name__}."
                 )
     
-    def _check_pipeline_options(self, pipeline_dic, pipeline_options):
-        unknown_steps = (set(pipeline_options) - set(pipeline_dic))
+    def _check_pipeline_options(self):
+        unknown_steps = set(self.pipeline_options_) - set(self.pipeline_dic)
         if unknown_steps:
             raise ValueError(f"pipeline_options contains unknown pipeline steps: {sorted(unknown_steps)}.")
-        for step_name, options in pipeline_options.items():
+        for step_name, options in self.pipeline_options_.items():
             if not isinstance(options, Mapping):
                 raise TypeError(f"Options for step {step_name!r} must be provided as a mapping.")
 
-    def _get_parameters_grid(self, parameters_grid):
-        if isinstance(parameters_grid, Mapping):
+    def _get_parameters_grid(self):
+        if isinstance(self.params_dic, Mapping):
             # wrap dictionary in a singleton list to support either dict
             # or list of dicts
-            parameters_grid = [parameters_grid]
+            self.params_dic = [self.params_dic]
         new_parameters_grid = []
-        for grid in parameters_grid:
+        for grid in self.params_dic:
             if not isinstance(grid, Mapping):
                 raise TypeError("Each parameter grid must be a mapping.")
             parameters_dic = {}
@@ -95,21 +175,21 @@ class NestedCV(BaseEstimator):
             new_parameters_grid.append(parameters_dic)
         return new_parameters_grid
 
-    def _get_pipeline(self, pipeline_dic):
+    def _get_pipeline(self):
         pipeline_steps = []
-        for step in pipeline_dic.keys():
+        for step in self.pipeline_dic.keys():
             kwargs = self.pipeline_options_.get(step, {})
-            if isinstance(pipeline_dic[step], str) and pipeline_dic[step] == "passthrough":
+            if isinstance(self.pipeline_dic[step], str) and self.pipeline_dic[step] == "passthrough":
                 if kwargs:
                     raise ValueError(f"Pipeline options were provided for passthrough step {step!r}.")
                 step_object = "passthrough"
-            elif isinstance(pipeline_dic[step], BaseEstimator):
-                step_object = clone(pipeline_dic[step])
+            elif isinstance(self.pipeline_dic[step], BaseEstimator):
+                step_object = clone(self.pipeline_dic[step])
                 if kwargs:
                     step_object.set_params(**kwargs)
             else:
                 # Estimator class or user-provided factory.
-                step_object = pipeline_dic[step](**kwargs)
+                step_object = self.pipeline_dic[step](**kwargs)
             pipeline_steps.append((step, step_object))
         if self.imblearn_pipeline:
             # TODO : detect automatically if imblearn pipeline should be used
@@ -126,7 +206,7 @@ class NestedCV(BaseEstimator):
             "in outer_results['best_inner_params']."
         )
         else:
-            check_is_fitted(self)
+            check_is_fitted(self, attributes=["best_estimator_"])
 
     @staticmethod
     def _check_X_Y(X, y=None):
@@ -190,7 +270,7 @@ class NestedCV(BaseEstimator):
             yield None
             return
 
-        if self.memory == "temporary":
+        if isinstance(self.memory, str) and self.memory == "temporary":
             with TemporaryDirectory(prefix="nested_cv_cache_") as directory:
                 yield Memory(location=directory, verbose=0)
             return
@@ -247,10 +327,10 @@ class NestedCV(BaseEstimator):
             self.pipeline_options_ = {}
         else:
             self.pipeline_options_ = dict(self.pipeline_options)
-        self._check_pipeline_dic(self.pipeline_dic)
-        self._check_pipeline_options(self.pipeline_dic, self.pipeline_options_)
-        self.model = self._get_pipeline(self.pipeline_dic)
-        self.params_grid = self._get_parameters_grid(self.params_dic)
+        self._check_pipeline_dic()
+        self._check_pipeline_options()
+        self.model = self._get_pipeline()
+        self.params_grid = self._get_parameters_grid()
 
         # Last element of pipeline = estimator
         outer_cv = check_cv(self.outer_cv, y, classifier=is_classifier(self.model[-1]))
@@ -281,11 +361,12 @@ class NestedCV(BaseEstimator):
                 print('\n-----------------\n{0}/{1} <-- Current outer fold'.format(k_outer + 1, outer_cv.get_n_splits()))
             X_train_outer, X_test_outer = X[train_outer_index], X[test_outer_index]
             y_train_outer, y_test_outer = y[train_outer_index], y[test_outer_index]
+            groups_train_outer = None if groups is None else np.asarray(groups)[train_outer_index]
             with self._memory_context() as memory:
                 inner_model = clone(self.model)
                 inner_model.set_params(memory=memory)
                 pipeline_inner = self._get_inner_param_optimizer(inner_model, inner_cv)
-                pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups, **fit_params)
+                pipeline_inner.fit(X_train_outer, y_train_outer, groups=groups_train_outer, **fit_params)
                 self.append_scores(pipeline_inner, X_train_outer, X_test_outer, y_train_outer, y_test_outer,
                                    train_outer_index, test_outer_index)
                 if self.verbose > 2:
@@ -479,6 +560,7 @@ class NestedCV(BaseEstimator):
         self._check_is_fitted('inverse_transform')
         return self.best_estimator_.inverse_transform(Xt)
 
+    @property
     def classes_(self):
         self._check_is_fitted("classes_")
         return self.best_estimator_.classes_
@@ -489,36 +571,23 @@ class GridSearchNestedCV(NestedCV):
     Nested Cross Validation  with grid search hyperparameter optimization in inner loop
     Parameters
     ----------
-    pipeline_dic: dictionary {str: callable}
-        Dictionary containing the steps with which the pipeline will be constructed. Pipeline steps names (string) as
-        keys and sklearn-like transform object (callable) as value except the last object that must be
-        an sklearn-like estimator (callable).
-        Steps will be chained in the order in which they are given.
-        If some steps include callable from imblearn package
-        (https://imbalanced-learn.readthedocs.io/en/stable/index.html) imblearn_pipeline option must be set to True (see
-        cv_options argument).
-        If key is either 'FeatureSelection' or 'DimensionalityReduction' the value can be either str or callable.
-        Keyword options of each callable can be given in cv_options (see cv_options argument)
-        Example:
-        pipeline_dic = {'scale': sklearn.preprocessing.StandardScaler,
-                        'oversampling': imblearn.over_sampling.SMOTE,
-                        'DimensionalityReduction': sklearn.decomposition.PCA,
-                        'FeatureSelection': 'mw',
-                        'classifier': sklearn.linear_model.LogisiticRegression}
-    params_grid: dict or list of dictionaries
-        Dictionary with step names (string) as keys and dictionary with parameters grid as values,
-        or a list of such dictionaries, in which case the grids spanned by each dictionary in the list are explored.
-        This enables searching over any sequence of parameter settings.
-        Parameters grid given as value must be dictionary with parameters names (string) as keys and lists of parameter
-        settings to try as values as taken by sklearn.model_selection.GridSearchCV.
-        Example with previous pipeline:
-        params_grid = [{'DimensionalityReduction': {'n_components': [0.95, 0.99], 'svd_solver': ['full']},
-                        'FeatureSelection': {'n_selected_features': [5,10,15,20,n_features]},
-                        'classifier': {'penalty': ['l1'], 'C': np.arange(0.001, 1, 0.002), 'solver': ['saga']}},
-                       {'DimensionalityReduction': {'n_components': [0.95, 0.99], 'svd_solver': ['full']},
-                        'FeatureSelection': {'n_selected_features': [5,10,15,20,n_features]},
-                        'classifier': {'penalty': ['elasticnet'], 'C': np.arange(0.001, 1, 0.002), 'solver': ['saga'],
-                                       'l1_ratio': np.arange(0.1, 1, 0.1)}}]
+    pipeline_dic : mapping of str to estimator specification
+        Ordered mapping used to construct the pipeline. Keys are pipeline step
+        names. Values may be an estimator class, a callable factory returning
+        an estimator, an already instantiated scikit-learn compatible
+        ``BaseEstimator``, or the string ``"passthrough"``.
+
+        Intermediate steps of a standard scikit-learn pipeline must implement
+        ``fit`` and ``transform``. When ``imblearn_pipeline=True``, compatible
+        imbalanced-learn samplers are also accepted. The final step must
+        implement ``fit``. Steps are chained in mapping insertion order.
+    params_dic : mapping or list of mappings
+        Hyperparameter search space grouped by pipeline step. Each outer key
+        must match a step name from ``pipeline_dic`` and each value must be a
+        mapping from unprefixed estimator parameter names to candidate values
+        accepted by the selected search method. Parameters are internally
+        converted to scikit-learn's ``step_name__parameter_name`` format.
+        A list of mappings defines separate search spaces.
     outer_cv: int, cross-validation generator or an iterable, optional (default=5)
         Determines the cross-validation splitting strategy. Possible inputs for cv are:
             None, to use the default 5-fold cross validation,
@@ -596,6 +665,14 @@ class GridSearchNestedCV(NestedCV):
         the overfitting/underfitting trade-off. However computing the scores on the training set can be
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
+    memory : None, 'temporary', path-like or joblib.Memory, default=None
+            Pipeline caching configuration. ``None`` disables caching.
+            ``'temporary'`` creates one temporary shared cache for each inner
+            search and for the optional final full-data search, then removes it
+            when that search ends. A path-like value or ``joblib.Memory`` object is
+            normalized with :func:`sklearn.utils.validation.check_memory` and is
+            managed by the caller. Only intermediate pipeline transformers are
+            cached; the final estimator is never cached.
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options=None, metric='roc_auc', verbose=1, refit_outer=True,
@@ -607,12 +684,12 @@ class GridSearchNestedCV(NestedCV):
 
     def _get_inner_param_optimizer(self, inner_model, inner_cv):
         return GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
-                            return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                            return_train_score=self.return_train_score, verbose=max(0, self.verbose - 1),
                             pre_dispatch=self.pre_dispatch, refit=self.refit_inner, error_score=self.error_score)
 
     def _get_outer_param_optimizer(self, final_model, outer_cv):
         return GridSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric], n_jobs=self.n_jobs,
-                            cv=outer_cv, verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
+                            cv=outer_cv, verbose=max(0, self.verbose - 1), pre_dispatch=self.pre_dispatch,
                             error_score=self.error_score)
 
 
@@ -621,36 +698,23 @@ class RandomSearchNestedCV(NestedCV):
     Nested Cross Validation with random search hyperparameter optimization in inner loop
     Parameters
     ----------
-    pipeline_dic: dictionary {str: callable}
-        Dictionary containing the steps with which the pipeline will be constructed. Pipeline steps names (string) as
-        keys and sklearn-like transform object (callable) as value except the last object that must be
-        an sklearn-like estimator (callable).
-        Steps will be chained in the order in which they are given.
-        If some steps include callable from imblearn package
-        (https://imbalanced-learn.readthedocs.io/en/stable/index.html) imblearn_pipeline option must be set to True (see
-        cv_options argument).
-        If key is either 'FeatureSelection' or 'DimensionalityReduction' the value can be either str or callable.
-        Keyword options of each callable can be given in cv_options (see cv_options argument)
-        Example:
-        pipeline_dic = {'scale': sklearn.preprocessing.StandardScaler,
-                        'oversampling': imblearn.over_sampling.SMOTE,
-                        'DimensionalityReduction': sklearn.decomposition.PCA,
-                        'FeatureSelection': 'mw',
-                        'classifier': sklearn.linear_model.LogisiticRegression}
-    params_grid: dict or list of dictionaries
-        Dictionary with step names (string) as keys and dictionary with parameters grid as values,
-        or a list of such dictionaries, in which case the grids spanned by each dictionary in the list are explored.
-        This enables searching over any sequence of parameter settings.
-        Parameters grid given as value must be dictionary with parameters names (string) as keys and lists of parameter
-        settings to try as values as taken by sklearn.model_selection.GridSearchCV.
-        Example with previous pipeline:
-        params_grid = [{'DimensionalityReduction': {'n_components': [0.95, 0.99], 'svd_solver': ['full']},
-                        'FeatureSelection': {'n_selected_features': [5,10,15,20,n_features]},
-                        'classifier': {'penalty': ['l1'], 'C': np.arange(0.001, 1, 0.002), 'solver': ['saga']}},
-                       {'DimensionalityReduction': {'n_components': [0.95, 0.99], 'svd_solver': ['full']},
-                        'FeatureSelection': {'n_selected_features': [5,10,15,20,n_features]},
-                        'classifier': {'penalty': ['elasticnet'], 'C': np.arange(0.001, 1, 0.002), 'solver': ['saga'],
-                                       'l1_ratio': np.arange(0.1, 1, 0.1)}}]
+    pipeline_dic : mapping of str to estimator specification
+        Ordered mapping used to construct the pipeline. Keys are pipeline step
+        names. Values may be an estimator class, a callable factory returning
+        an estimator, an already instantiated scikit-learn compatible
+        ``BaseEstimator``, or the string ``"passthrough"``.
+
+        Intermediate steps of a standard scikit-learn pipeline must implement
+        ``fit`` and ``transform``. When ``imblearn_pipeline=True``, compatible
+        imbalanced-learn samplers are also accepted. The final step must
+        implement ``fit``. Steps are chained in mapping insertion order.
+    params_dic : mapping or list of mappings
+        Hyperparameter search space grouped by pipeline step. Each outer key
+        must match a step name from ``pipeline_dic`` and each value must be a
+        mapping from unprefixed estimator parameter names to candidate values
+        accepted by the selected search method. Parameters are internally
+        converted to scikit-learn's ``step_name__parameter_name`` format.
+        A list of mappings defines separate search spaces.
     outer_cv: int, cross-validation generator or an iterable, optional (default=5)
         Determines the cross-validation splitting strategy. Possible inputs for cv are:
             None, to use the default 5-fold cross validation,
@@ -728,12 +792,20 @@ class RandomSearchNestedCV(NestedCV):
         the overfitting/underfitting trade-off. However computing the scores on the training set can be
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
+    memory : None, 'temporary', path-like or joblib.Memory, default=None
+        Pipeline caching configuration. ``None`` disables caching.
+        ``'temporary'`` creates one temporary shared cache for each inner
+        search and for the optional final full-data search, then removes it
+        when that search ends. A path-like value or ``joblib.Memory`` object is
+        normalized with :func:`sklearn.utils.validation.check_memory` and is
+        managed by the caller. Only intermediate pipeline transformers are
+        cached; the final estimator is never cached.
     n_iter: int (default=10)
         Number of parameter settings that are sampled. n_iter trades off runtime vs quality of the solution.
     random_state: int, RandomState instance or None (default=None)
         Pseudo random number generator state used for random uniform sampling from lists of possible values instead
         of scipy.stats distributions. Pass an int for reproducible output across multiple function calls.
-        """
+    """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options=None, metric='roc_auc', verbose=1, refit_outer=True,
                  error_score=np.nan, refit_inner=True, return_train_score=False, memory=None, n_iter=10, random_state=None):
@@ -747,14 +819,14 @@ class RandomSearchNestedCV(NestedCV):
     def _get_inner_param_optimizer(self, inner_model, inner_cv):
         return RandomizedSearchCV(inner_model, self.params_grid, scoring=self.scorers,
                                   n_jobs=self.n_jobs, cv=inner_cv, n_iter=self.n_iter,
-                                  return_train_score=self.return_train_score, verbose=self.verbose - 1,
+                                  return_train_score=self.return_train_score, verbose=max(0, self.verbose - 1),
                                   pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
                                   random_state=self.random_state, error_score=self.error_score)
 
     def _get_outer_param_optimizer(self, final_model, outer_cv):
         return RandomizedSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric],
                                   n_jobs=self.n_jobs,  cv=outer_cv, n_iter=self.n_iter,
-                                  verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
+                                  verbose=max(0, self.verbose - 1), pre_dispatch=self.pre_dispatch,
                                   error_score=self.error_score, random_state=self.random_state)
 
 
@@ -763,36 +835,23 @@ class BayesianSearchNestedCV(NestedCV):
     Nested Cross Validation with bayesian search hyperparameter optimization in inner loop
     Parameters
     ----------
-    pipeline_dic: dictionary {str: callable}
-        Dictionary containing the steps with which the pipeline will be constructed. Pipeline steps names (string) as
-        keys and sklearn-like transform object (callable) as value except the last object that must be
-        an sklearn-like estimator (callable).
-        Steps will be chained in the order in which they are given.
-        If some steps include callable from imblearn package
-        (https://imbalanced-learn.readthedocs.io/en/stable/index.html) imblearn_pipeline option must be set to True (see
-        cv_options argument).
-        If key is either 'FeatureSelection' or 'DimensionalityReduction' the value can be either str or callable.
-        Keyword options of each callable can be given in cv_options (see cv_options argument)
-        Example:
-        pipeline_dic = {'scale': sklearn.preprocessing.StandardScaler,
-                        'oversampling': imblearn.over_sampling.SMOTE,
-                        'DimensionalityReduction': sklearn.decomposition.PCA,
-                        'FeatureSelection': 'mw',
-                        'classifier': sklearn.linear_model.LogisiticRegression}
-    params_grid: dict or list of dictionaries
-        Dictionary with step names (string) as keys and dictionary with parameters grid as values,
-        or a list of such dictionaries, in which case the grids spanned by each dictionary in the list are explored.
-        This enables searching over any sequence of parameter settings.
-        Parameters grid given as value must be dictionary with parameters names (string) as keys and lists of parameter
-        settings to try as values as taken by sklearn.model_selection.GridSearchCV.
-        Example with previous pipeline:
-        params_grid = [{'DimensionalityReduction': {'n_components': [0.95, 0.99], 'svd_solver': ['full']},
-                        'FeatureSelection': {'n_selected_features': [5,10,15,20,n_features]},
-                        'classifier': {'penalty': ['l1'], 'C': np.arange(0.001, 1, 0.002), 'solver': ['saga']}},
-                       {'DimensionalityReduction': {'n_components': [0.95, 0.99], 'svd_solver': ['full']},
-                        'FeatureSelection': {'n_selected_features': [5,10,15,20,n_features]},
-                        'classifier': {'penalty': ['elasticnet'], 'C': np.arange(0.001, 1, 0.002), 'solver': ['saga'],
-                                       'l1_ratio': np.arange(0.1, 1, 0.1)}}]
+    pipeline_dic : mapping of str to estimator specification
+        Ordered mapping used to construct the pipeline. Keys are pipeline step
+        names. Values may be an estimator class, a callable factory returning
+        an estimator, an already instantiated scikit-learn compatible
+        ``BaseEstimator``, or the string ``"passthrough"``.
+
+        Intermediate steps of a standard scikit-learn pipeline must implement
+        ``fit`` and ``transform``. When ``imblearn_pipeline=True``, compatible
+        imbalanced-learn samplers are also accepted. The final step must
+        implement ``fit``. Steps are chained in mapping insertion order.
+    params_dic : mapping or list of mappings
+        Hyperparameter search space grouped by pipeline step. Each outer key
+        must match a step name from ``pipeline_dic`` and each value must be a
+        mapping from unprefixed estimator parameter names to candidate values
+        accepted by the selected search method. Parameters are internally
+        converted to scikit-learn's ``step_name__parameter_name`` format.
+        A list of mappings defines separate search spaces.
     outer_cv: int, cross-validation generator or an iterable, optional (default=5)
         Determines the cross-validation splitting strategy. Possible inputs for cv are:
             None, to use the default 5-fold cross validation,
@@ -866,6 +925,14 @@ class BayesianSearchNestedCV(NestedCV):
         the overfitting/underfitting trade-off. However computing the scores on the training set can be
         computationally expensive and is not strictly required to select the parameters that yield the best
         generalization performance.
+    memory : None, 'temporary', path-like or joblib.Memory, default=None
+        Pipeline caching configuration. ``None`` disables caching.
+        ``'temporary'`` creates one temporary shared cache for each inner
+        search and for the optional final full-data search, then removes it
+        when that search ends. A path-like value or ``joblib.Memory`` object is
+        normalized with :func:`sklearn.utils.validation.check_memory` and is
+        managed by the caller. Only intermediate pipeline transformers are
+        cached; the final estimator is never cached.
     n_iter: int (default=10)
         Number of parameter settings that are sampled. n_iter trades off runtime vs quality of the solution.
     random_state: int, RandomState instance or None (default=None)
@@ -880,12 +947,12 @@ class BayesianSearchNestedCV(NestedCV):
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options=None, metric='roc_auc', verbose=1, refit_outer=True,
-                 error_score=np.nan, refit_inner=True, return_train_score=False, n_iter=50, random_state=None,
+                 error_score=np.nan, refit_inner=True, return_train_score=False, memory=None, n_iter=50, random_state=None,
                  optimizer_kwargs=None, n_points=1):
         super().__init__(pipeline_dic, params_dic, outer_cv=outer_cv, inner_cv=inner_cv, n_jobs=n_jobs,
                          pre_dispatch=pre_dispatch, imblearn_pipeline=imblearn_pipeline, pipeline_options=pipeline_options,
                          metric=metric, verbose=verbose, refit_outer=refit_outer, error_score=error_score,
-                         refit_inner=refit_inner, return_train_score=return_train_score)
+                         refit_inner=refit_inner, return_train_score=return_train_score, memory=memory)
         self.n_iter = n_iter
         self.random_state = random_state
         self.optimizer_kwargs = optimizer_kwargs
@@ -904,12 +971,12 @@ class BayesianSearchNestedCV(NestedCV):
         return BayesSearchCV(inner_model, self.params_grid, scoring=self.scorers,
                              optimizer_kwargs=self.optimizer_kwargs, n_points=self.n_points, n_jobs=self.n_jobs,
                              cv=inner_cv, n_iter=self.n_iter, return_train_score=self.return_train_score,
-                             verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
+                             verbose=max(0, self.verbose - 1), pre_dispatch=self.pre_dispatch, refit=self.refit_inner,
                              random_state=self.random_state, error_score=self.error_score)
 
     def _get_outer_param_optimizer(self, final_model, outer_cv):
         self._check_bayes_search_available()
         return BayesSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric],
                              optimizer_kwargs=self.optimizer_kwargs, n_points=self.n_points, n_jobs=self.n_jobs,
-                             cv=outer_cv, n_iter=self.n_iter, verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
+                             cv=outer_cv, n_iter=self.n_iter, verbose=max(0, self.verbose - 1), pre_dispatch=self.pre_dispatch,
                              error_score=self.error_score, random_state=self.random_state)
