@@ -1,14 +1,9 @@
-import copy
-import string
-import warnings
 import tempfile
 import numpy as np
 import pandas as pd
 from collections.abc import Mapping
 from sklearn.pipeline import Pipeline as skPipeline
 from imblearn.pipeline import Pipeline as imbPipeline
-from dimensionality_reduction import DimensionalityReduction
-from feature_selection import FeatureSelection
 from sklearn.model_selection._split import check_cv
 from sklearn.base import is_classifier
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
@@ -18,7 +13,10 @@ from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator, clone
 from joblib import Memory
 from shutil import rmtree
-from bayes_search_multiscore import BayesSearchCV
+try:
+    from .bayes_search_multiscore import BayesSearchCV
+except ImportError:
+    BayesSearchCV = None
 
 
 class NestedCV(BaseEstimator):
@@ -43,26 +41,38 @@ class NestedCV(BaseEstimator):
         self.refit_inner = refit_inner
         self.return_train_score = return_train_score
 
-    @staticmethod
-    def _string_processing(key):
-        table = str.maketrans({key: '' for key in string.punctuation})
-        key = key.translate(table)
-        table = str.maketrans({key: '' for key in string.whitespace})
-        key = key.translate(table)
-        return key.lower()
-
     def _check_pipeline_dic(self, pipeline_dic):
         if not isinstance(pipeline_dic, Mapping):
-            raise TypeError('pipeline_dic argument must be a dictionary')
+            raise TypeError("pipeline_dic must be a mapping from step names "
+            "to estimator classes, estimator instances, or "
+            "'passthrough'.")
+        if len(pipeline_dic) == 0:
+            raise ValueError("pipeline_dic must contain at least one step.")
         for step in pipeline_dic.keys():
-            if self._string_processing(step) == 'dimensionalityreduction' or self._string_processing(step) == 'featureselection':
-                if not callable(pipeline_dic[step]) and not isinstance(pipeline_dic[step], str):
-                    raise TypeError('Dictionary values must be a callable or a string when the associated key is '
-                                    'DimensionalityReduction or FeatureSelection')
-            else:
-                if not callable(pipeline_dic[step]):
-                    raise TypeError('Dictionary value must be a callable if associated key is not '
-                                    'DimensionalityReduction or FeatureSelection')
+            if not isinstance(step, str):
+                raise TypeError("Every pipeline step name must be a string.")
+            if not step:
+                raise ValueError("Pipeline step names cannot be empty.")
+            if "__" in step:
+                    raise ValueError(f"Pipeline step name {step!r} must not contain '__'.")
+            is_estimator = isinstance(pipeline_dic[step], BaseEstimator)
+            is_factory = callable(pipeline_dic[step])
+            is_special_value = isinstance(pipeline_dic[step], str) and pipeline_dic[step] == "passthrough"
+            if not (is_estimator or is_factory or is_special_value ):
+                raise TypeError(
+                    f"Pipeline step {step!r} must be an "
+                    "estimator instance, an estimator class or "
+                    "factory, or 'passthrough'. Got "
+                    f"{type(pipeline_dic[step]).__name__}."
+                )
+    
+    def _check_pipeline_options(self, pipeline_dic, pipeline_options):
+        unknown_steps = (set(pipeline_options) - set(pipeline_dic))
+        if unknown_steps:
+            raise ValueError(f"pipeline_options contains unknown pipeline steps: {sorted(unknown_steps)}.")
+        for step_name, options in pipeline_options.items():
+            if not isinstance(options, Mapping):
+                raise TypeError(f"Options for step {step_name!r} must be provided as a mapping.")
 
     def _get_parameters_grid(self, parameters_grid):
         if isinstance(parameters_grid, Mapping):
@@ -71,31 +81,31 @@ class NestedCV(BaseEstimator):
             parameters_grid = [parameters_grid]
         new_parameters_grid = []
         for grid in parameters_grid:
+            if not isinstance(grid, Mapping):
+                raise TypeError("Each parameter grid must be a mapping.")
             parameters_dic = {}
             for step in grid.keys():
+                if not isinstance(grid[step], Mapping):
+                    raise TypeError( f"Parameters for step {step!r} must be provided as a mapping.")
                 for params in grid[step].keys():
-                    if self._string_processing(step) == 'dimensionalityreduction':
-                        parameters_dic[step + '__method__' + params] = grid[step][params]
-                    else:
-                        parameters_dic[step + '__' + params] = grid[step][params]
+                    parameters_dic[step + '__' + params] = grid[step][params]
             new_parameters_grid.append(parameters_dic)
         return new_parameters_grid
 
-    # TODO : change this to treat DimensionalityReduction and FeatureSelection as other classes. Pass pipeline directly?
     def _get_pipeline(self, pipeline_dic):
         pipeline_steps = []
         for step in pipeline_dic.keys():
             kwargs = self.pipeline_options_.get(step, {})
-            if not kwargs:
-                warnings.warn('Default parameters are loaded for {0} (see corresponding class for detailed kwargs)'.format(step))
-            if self._string_processing(step) == 'dimensionalityreduction':
-                if callable(pipeline_dic[step]):
-                    step_object = DimensionalityReduction(pipeline_dic[step](**kwargs))
-                else:
-                    step_object = DimensionalityReduction(pipeline_dic[step], **kwargs)
-            elif self._string_processing(step) == 'featureselection':
-                step_object = FeatureSelection(pipeline_dic[step], **kwargs)
+            if isinstance(pipeline_dic[step], str) and pipeline_dic[step] == "passthrough":
+                if kwargs:
+                    raise ValueError(f"Pipeline options were provided for passthrough step {step!r}.")
+                step_object = "passthrough"
+            elif isinstance(pipeline_dic[step], BaseEstimator):
+                step_object = clone(pipeline_dic[step])
+                if kwargs:
+                    step_object.set_params(**kwargs)
             else:
+                # Estimator class or user-provided factory.
                 step_object = pipeline_dic[step](**kwargs)
             pipeline_steps.append((step, step_object))
         if self.imblearn_pipeline:
@@ -106,13 +116,12 @@ class NestedCV(BaseEstimator):
 
     def _check_is_fitted(self, method_name):
         if not self.refit_outer:
-            raise NotFittedError('This %s instance was initialized '
-                                 'with refit=False. %s is '
-                                 'available only after refitting on the best '
-                                 'parameters. You can refit an estimator '
-                                 'manually using the ``best_params_`` '
-                                 'attribute'
-                                 % (type(self).__name__, method_name))
+            raise NotFittedError(f"This {type(self).__name__} instance was fitted with "
+            "refit_outer=False. No final estimator was fitted on the "
+            f"full dataset, so {method_name} is unavailable. "
+            "The parameter choices from each outer fold are available "
+            "in outer_results['best_inner_params']."
+        )
         else:
             check_is_fitted(self)
 
@@ -135,6 +144,12 @@ class NestedCV(BaseEstimator):
         raise NotImplementedError('_get_outer_param_optimizer not implemented')
 
     def _check_refit_for_multimetric(self):
+        if self.refit_inner is False:
+            raise ValueError(
+                "refit_inner=False is not supported because the best "
+                "inner-loop estimator must be refitted on the complete "
+                "outer training set before evaluation on the outer test set."
+            )
         if self.multimetric_:
             if callable(self.refit_inner):
                 raise ValueError('If inner loops use multimetric scoring and the user want to refit according to a '
@@ -218,6 +233,7 @@ class NestedCV(BaseEstimator):
         else:
             self.pipeline_options_ = dict(self.pipeline_options)
         self._check_pipeline_dic(self.pipeline_dic)
+        self._check_pipeline_options(self.pipeline_dic, self.pipeline_options_)
         self.model = self._get_pipeline(self.pipeline_dic)
         self.params_grid = self._get_parameters_grid(self.params_dic)
 
@@ -289,6 +305,10 @@ class NestedCV(BaseEstimator):
             pipeline_refit = self._get_outer_param_optimizer(final_model, outer_cv)
             pipeline_refit.fit(X, y, groups=groups, **fit_params)
             self.best_estimator_ = pipeline_refit.best_estimator_
+            self.best_params_ = pipeline_refit.best_params_
+            self.best_score_ = pipeline_refit.best_score_
+            self.best_index_ = pipeline_refit.best_index_
+            self.cv_results_ = pipeline_refit.cv_results_
             memory.clear(warn=False)
             rmtree(location)
         return self
@@ -541,7 +561,7 @@ class GridSearchNestedCV(NestedCV):
         Value to assign to the score if an error occurs in estimator fitting. If set to ‘raise’, the error is raised.
         If a numeric value is given, FitFailedWarning is raised. This parameter does not affect the refit step, which
         will always raise the error.
-    refit_inner: boolean, string or callable (default=True)
+    refit_inner: True, string or callable (default=True)
         Refit an estimator using the best found parameters on the whole outer training set
         Argument will be given to GridsearchCV that select hyperparameters in the inner loop :
             For multiple metric evaluation, this needs to be a string denoting the scorer that would be used to find the
@@ -673,7 +693,7 @@ class RandomSearchNestedCV(NestedCV):
         Value to assign to the score if an error occurs in estimator fitting. If set to ‘raise’, the error is raised.
         If a numeric value is given, FitFailedWarning is raised. This parameter does not affect the refit step, which
         will always raise the error.
-    refit_inner: boolean, string or callable (default=True)
+    refit_inner: True, string or callable (default=True)
         Refit an estimator using the best found parameters on the whole outer training set
         Argument will be given to search method that select hyperparameters in the inner loop :
             For multiple metric evaluation, this needs to be a string denoting the scorer that would be used to find the
@@ -815,7 +835,7 @@ class BayesianSearchNestedCV(NestedCV):
         Value to assign to the score if an error occurs in estimator fitting. If set to ‘raise’, the error is raised.
         If a numeric value is given, FitFailedWarning is raised. This parameter does not affect the refit step, which
         will always raise the error.
-    refit_inner: boolean, string (default=True)
+    refit_inner: True, string (default=True)
         Refit an estimator using the best found parameters on the whole outer training set
         Argument will be given to search method that select hyperparameters in the inner loop :
             For multiple metric evaluation, this needs to be a string denoting the scorer that would be used to find the
@@ -856,8 +876,17 @@ class BayesianSearchNestedCV(NestedCV):
         self.random_state = random_state
         self.optimizer_kwargs = optimizer_kwargs
         self.n_points = n_points
+        
+    def _check_bayes_search_available(self):
+        if BayesSearchCV is None:
+            raise ImportError(
+                "BayesianSearchNestedCV requires the local "
+                "'bayes_search_multiscore.py' module to be available "
+                "inside the same package."
+            )
 
     def _get_inner_param_optimizer(self, inner_model, inner_cv):
+        self._check_bayes_search_available()
         return BayesSearchCV(inner_model, self.params_grid, scoring=self.scorers,
                              optimizer_kwargs=self.optimizer_kwargs, n_points=self.n_points, n_jobs=self.n_jobs,
                              cv=inner_cv, n_iter=self.n_iter, return_train_score=self.return_train_score,
@@ -865,6 +894,7 @@ class BayesianSearchNestedCV(NestedCV):
                              random_state=self.random_state, error_score=self.error_score)
 
     def _get_outer_param_optimizer(self, final_model, outer_cv):
+        self._check_bayes_search_available()
         return BayesSearchCV(final_model, self.params_grid, scoring=self.scorers[self.refit_metric],
                              optimizer_kwargs=self.optimizer_kwargs, n_points=self.n_points, n_jobs=self.n_jobs,
                              cv=outer_cv, n_iter=self.n_iter, verbose=self.verbose - 1, pre_dispatch=self.pre_dispatch,
