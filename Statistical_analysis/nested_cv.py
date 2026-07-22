@@ -1,6 +1,8 @@
-import tempfile
 import numpy as np
 import pandas as pd
+from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from collections.abc import Mapping
 from sklearn.pipeline import Pipeline as skPipeline
 from imblearn.pipeline import Pipeline as imbPipeline
@@ -8,7 +10,7 @@ from sklearn.model_selection._split import check_cv
 from sklearn.base import is_classifier
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.metrics._scorer import check_scoring, _check_multimetric_scoring
-from sklearn.utils.validation import check_is_fitted
+from sklearn.utils.validation import check_is_fitted, check_memory
 from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator, clone
 from joblib import Memory
@@ -25,7 +27,7 @@ class NestedCV(BaseEstimator):
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options=None, metric='roc_auc', verbose=1, refit_outer=True,
-                 error_score=np.nan, refit_inner=True, return_train_score=False):
+                 error_score=np.nan, refit_inner=True, return_train_score=False, memory=None):
         self.imblearn_pipeline = imblearn_pipeline
         self.pipeline_options = pipeline_options
         self.pipeline_dic = pipeline_dic
@@ -40,6 +42,7 @@ class NestedCV(BaseEstimator):
         self.error_score = error_score
         self.refit_inner = refit_inner
         self.return_train_score = return_train_score
+        self.memory = memory
 
     def _check_pipeline_dic(self, pipeline_dic):
         if not isinstance(pipeline_dic, Mapping):
@@ -110,9 +113,9 @@ class NestedCV(BaseEstimator):
             pipeline_steps.append((step, step_object))
         if self.imblearn_pipeline:
             # TODO : detect automatically if imblearn pipeline should be used
-            return imbPipeline(pipeline_steps)
+            return imbPipeline(pipeline_steps, memory=None)
         else:
-            return skPipeline(pipeline_steps)
+            return skPipeline(pipeline_steps, memory=None)
 
     def _check_is_fitted(self, method_name):
         if not self.refit_outer:
@@ -180,9 +183,21 @@ class NestedCV(BaseEstimator):
             self.refit_metric = 'score'
             if self.refit_inner is True:
                 self.refit_inner = 'score'
-            # TODO : what if refit inner = False ? we need to have access to best_estimator_ for outer loop so we have
-            #  to refit
 
+    @contextmanager
+    def _memory_context(self):
+        if self.memory is None:
+            yield None
+            return
+
+        if self.memory == "temporary":
+            with TemporaryDirectory(prefix="nested_cv_cache_") as directory:
+                yield Memory(location=directory, verbose=0)
+            return
+
+        # String path, pathlib.Path, or Memory-like object.
+        yield check_memory(self.memory)
+    
     def fit(self, X, y=None, groups=None, **fit_params):
         """
         Fit Nested CV with all sets of parameters.
@@ -266,8 +281,7 @@ class NestedCV(BaseEstimator):
                 print('\n-----------------\n{0}/{1} <-- Current outer fold'.format(k_outer + 1, outer_cv.get_n_splits()))
             X_train_outer, X_test_outer = X[train_outer_index], X[test_outer_index]
             y_train_outer, y_test_outer = y[train_outer_index], y[test_outer_index]
-            with tempfile.TemporaryDirectory() as location:
-                memory = Memory(location=location, verbose=0)
+            with self._memory_context() as memory:
                 inner_model = clone(self.model)
                 inner_model.set_params(memory=memory)
                 pipeline_inner = self._get_inner_param_optimizer(inner_model, inner_cv)
@@ -283,7 +297,6 @@ class NestedCV(BaseEstimator):
                     print('\nResults for outer fold:\nBest inner parameters was: {0}'.format(self.outer_results['best_inner_params'][-1]))
                     print('Outer score: {0}'.format(self.outer_results['outer_test_score'][-1]))
                     print('Inner score: {0}'.format(self.outer_results['best_inner_score'][-1]))
-                memory.clear(warn=False)
         if self.verbose > 0:
             print('\nOverall outer score (mean +/- std): {0} +/- {1}'.format(np.mean(self.outer_results['outer_test_score']),
                                                                              np.std(self.outer_results['outer_test_score'])))
@@ -297,20 +310,21 @@ class NestedCV(BaseEstimator):
 
         # If refit is True Hyperparameter optimization on whole dataset and fit with best params
         if self.refit_outer:
-            print('=== Refit ===')
-            location = 'cachedir'
-            memory = Memory(location=location, verbose=0)
-            final_model = clone(self.model)
-            final_model.set_params(memory=memory)
-            pipeline_refit = self._get_outer_param_optimizer(final_model, outer_cv)
-            pipeline_refit.fit(X, y, groups=groups, **fit_params)
-            self.best_estimator_ = pipeline_refit.best_estimator_
-            self.best_params_ = pipeline_refit.best_params_
-            self.best_score_ = pipeline_refit.best_score_
-            self.best_index_ = pipeline_refit.best_index_
-            self.cv_results_ = pipeline_refit.cv_results_
-            memory.clear(warn=False)
-            rmtree(location)
+            if self.verbose > 0:
+                print('=== Refit ===')
+            with self._memory_context() as memory:
+                final_model = clone(self.model)
+                final_model.set_params(memory=memory)
+                pipeline_refit = self._get_outer_param_optimizer(final_model, outer_cv)
+                pipeline_refit.fit(X, y, groups=groups, **fit_params)
+                best_estimator = pipeline_refit.best_estimator_
+                best_estimator.set_params(memory=None)
+                self.best_estimator_ = best_estimator
+                self.best_params_ = pipeline_refit.best_params_
+                self.best_index_ = pipeline_refit.best_index_
+                self.cv_results_ = pipeline_refit.cv_results_
+                if hasattr(pipeline_refit, "best_score_"):
+                    self.best_score_ = pipeline_refit.best_score_
         return self
 
     def append_scores(self, pipeline_inner, X_train_outer, X_test_outer, y_train_outer, y_test_outer, train_outer_index,
@@ -328,17 +342,17 @@ class NestedCV(BaseEstimator):
         self.outer_results['outer_test_score'].append(self.scorers[self.refit_metric](pipeline_inner.best_estimator_, X_test_outer, y_test_outer))
         self.outer_pred['train'].append(train_outer_index)
         self.outer_pred['test'].append(test_outer_index)
-        self.outer_pred['model'].append(pipeline_inner.best_estimator_)
-        self.outer_pred['predict_train'].append(pipeline_inner.best_estimator_.predict(X_train_outer))
-        self.outer_pred['predict_test'].append(pipeline_inner.best_estimator_.predict(X_test_outer))
-        if hasattr(pipeline_inner.best_estimator_[-1], 'predict_proba'):
-            self.outer_pred['predict_proba_train'].append(pipeline_inner.best_estimator_.predict_proba(X_train_outer))
-            self.outer_pred['predict_proba_test'].append(pipeline_inner.best_estimator_.predict_proba(X_test_outer))
-        if hasattr(pipeline_inner.best_estimator_[-1], 'decision_function'):
-            self.outer_pred['decision_function_train'].append(
-                pipeline_inner.best_estimator_.decision_function(X_train_outer))
-            self.outer_pred['decision_function_test'].append(
-                pipeline_inner.best_estimator_.decision_function(X_test_outer))
+        fitted_model = pipeline_inner.best_estimator_
+        fitted_model.set_params(memory=None)
+        self.outer_pred['model'].append(fitted_model)
+        self.outer_pred['predict_train'].append(fitted_model.predict(X_train_outer))
+        self.outer_pred['predict_test'].append(fitted_model.predict(X_test_outer))
+        if hasattr(fitted_model[-1], 'predict_proba'):
+            self.outer_pred['predict_proba_train'].append(fitted_model.predict_proba(X_train_outer))
+            self.outer_pred['predict_proba_test'].append(fitted_model.predict_proba(X_test_outer))
+        if hasattr(fitted_model[-1], 'decision_function'):
+            self.outer_pred['decision_function_train'].append(fitted_model.decision_function(X_train_outer))
+            self.outer_pred['decision_function_test'].append(fitted_model.decision_function(X_test_outer))
 
 
     def score(self, X, y=None):
@@ -585,11 +599,11 @@ class GridSearchNestedCV(NestedCV):
     """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options=None, metric='roc_auc', verbose=1, refit_outer=True,
-                 error_score=np.nan, refit_inner=True, return_train_score=False):
+                 error_score=np.nan, refit_inner=True, return_train_score=False, memory=None):
         super().__init__(pipeline_dic, params_dic, outer_cv=outer_cv, inner_cv=inner_cv, n_jobs=n_jobs,
                          pre_dispatch=pre_dispatch, imblearn_pipeline=imblearn_pipeline, pipeline_options=pipeline_options,
                          metric=metric, verbose=verbose, refit_outer=refit_outer, error_score=error_score,
-                         refit_inner=refit_inner, return_train_score=return_train_score)
+                         refit_inner=refit_inner, return_train_score=return_train_score, memory=memory)
 
     def _get_inner_param_optimizer(self, inner_model, inner_cv):
         return GridSearchCV(inner_model, self.params_grid, scoring=self.scorers, n_jobs=self.n_jobs, cv=inner_cv,
@@ -722,11 +736,11 @@ class RandomSearchNestedCV(NestedCV):
         """
     def __init__(self, pipeline_dic, params_dic, outer_cv=5, inner_cv=5, n_jobs=None, pre_dispatch='2*n_jobs',
                  imblearn_pipeline=False, pipeline_options=None, metric='roc_auc', verbose=1, refit_outer=True,
-                 error_score=np.nan, refit_inner=True, return_train_score=False, n_iter=10, random_state=None):
+                 error_score=np.nan, refit_inner=True, return_train_score=False, memory=None, n_iter=10, random_state=None):
         super().__init__(pipeline_dic, params_dic, outer_cv=outer_cv, inner_cv=inner_cv, n_jobs=n_jobs,
                          pre_dispatch=pre_dispatch, imblearn_pipeline=imblearn_pipeline, pipeline_options=pipeline_options,
                          metric=metric, verbose=verbose, refit_outer=refit_outer, error_score=error_score,
-                         refit_inner=refit_inner, return_train_score=return_train_score)
+                         refit_inner=refit_inner, return_train_score=return_train_score, memory=self.memory)
         self.n_iter = n_iter
         self.random_state = random_state
 
