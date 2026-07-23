@@ -812,7 +812,7 @@ class RandomSearchNestedCV(NestedCV):
         super().__init__(pipeline_dic, params_dic, outer_cv=outer_cv, inner_cv=inner_cv, n_jobs=n_jobs,
                          pre_dispatch=pre_dispatch, imblearn_pipeline=imblearn_pipeline, pipeline_options=pipeline_options,
                          metric=metric, verbose=verbose, refit_outer=refit_outer, error_score=error_score,
-                         refit_inner=refit_inner, return_train_score=return_train_score, memory=self.memory)
+                         refit_inner=refit_inner, return_train_score=return_train_score, memory=memory)
         self.n_iter = n_iter
         self.random_state = random_state
 
